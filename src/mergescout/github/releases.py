@@ -16,7 +16,7 @@ class Releases:
     def __init__(self, token: str, repo: str, client: httpx.Client | None = None):
         self.repo = repo
         self.client = client or httpx.Client(timeout=httpx.Timeout(300.0, connect=15.0), follow_redirects=True)
-        self.headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        self.headers = {"Authorization": f"Bearer {token.strip()}", "Accept": "application/vnd.github+json",
                         "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mergescout"}
 
     @staticmethod

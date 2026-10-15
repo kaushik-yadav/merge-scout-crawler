@@ -247,3 +247,21 @@ def test_rejected_token_has_its_own_error():
     with pytest.raises(TokenRejected, match="rejected the token"):
         gql.query("q")
     assert sleeps == []
+
+
+def test_token_spaces_and_line_breaks_are_trimmed():
+    seen = []
+    client = httpx.Client(transport=httpx.MockTransport(lambda req: seen.append(req.headers["authorization"])
+                                                        or httpx.Response(200, json=OK)))
+    GitHubGraphQL("  abc123\n", client=client, sleep=lambda s: None).query("q")
+    assert seen == ["Bearer abc123"]
+
+
+def test_a_request_that_cannot_be_sent_is_not_retried():
+    def broken(req):
+        raise httpx.LocalProtocolError("Illegal header value")
+    sleeps = []
+    gql = GitHubGraphQL("t", client=httpx.Client(transport=httpx.MockTransport(broken)), sleep=sleeps.append)
+    with pytest.raises(GraphQLError, match="line breaks"):
+        gql.query("q")
+    assert sleeps == []

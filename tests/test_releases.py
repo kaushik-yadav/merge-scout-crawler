@@ -60,3 +60,10 @@ def test_errors_are_clear():
     rel, _ = fake([("GET", "/releases/tags/x", httpx.Response(403, text="Resource not accessible by integration"))])
     with pytest.raises(ReleaseError, match="HTTP 403"):
         rel.ensure("x")
+
+
+def test_release_token_is_trimmed():
+    rel, seen = fake([("GET", "/releases/tags/x", httpx.Response(404))])
+    rel2 = Releases("tok\n", "me/repo", client=rel.client)
+    rel2.get("x")
+    assert seen[-1].headers["authorization"] == "Bearer tok"

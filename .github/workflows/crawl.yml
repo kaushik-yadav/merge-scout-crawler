@@ -1,0 +1,73 @@
+name: Crawl
+
+on:
+  schedule:
+    # Every hour: each run spends that hour's GitHub points, then the next run continues the queue.
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Crawl minutes (the run also stops when the hour's points run out)"
+        default: "50"
+
+concurrency:
+  group: crawl-state
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    env:
+      MS_DATA_DIR: ${{ github.workspace }}/data
+      MS_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      # Crawled data and state backups are kept in the project repo's releases.
+      MS_RELEASE_TOKEN: ${{ secrets.MS_STORE_TOKEN }}
+      MS_STORE_REPO: kaushik-yadav/merge-scout
+    steps:
+      # Checkout first: it empties the folder, so the restored state must come after it.
+      - uses: actions/checkout@v4
+      - name: Restore state from the cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: crawl-state-${{ github.run_id }}
+          restore-keys: crawl-state-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install .
+      - name: Restore state from the releases if the cache is gone
+        if: steps.cache.outputs.cache-matched-key == ''
+        run: python -m mergescout.store pull
+      - name: Get a token for the MergeScout GitHub App (skipped until the App is set up)
+        id: app
+        if: vars.MS_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.MS_APP_ID }}
+          private-key: ${{ secrets.MS_APP_PRIVATE_KEY }}
+      - name: Crawl
+        # Leaves time to upload and save even if the process hangs on exit.
+        timeout-minutes: 52
+        run: python -m mergescout.crawl run --minutes "${{ inputs.minutes || '50' }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
+          # Extra identities with their own limits: the App (when set up) and this workflow's own token.
+          MS_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MS_ACTIONS_TOKEN: ${{ github.token }}
+      - name: Upload new data and a state backup to releases
+        if: always()
+        run: python -m mergescout.store push
+      - name: Save state to the cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: crawl-state-${{ github.run_id }}-${{ github.run_attempt }}

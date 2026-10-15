@@ -77,7 +77,8 @@ class GitHubGraphQL:
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), max_wait: float | None = None,
                  timeout_retries: int = 1, gate: Gate | None = None):
         self.client = client or httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0))
-        self.headers = {"Authorization": f"Bearer {token}", "User-Agent": "mergescout"}
+        # Tokens pasted into settings often carry a stray space or line break.
+        self.headers = {"Authorization": f"Bearer {token.strip()}", "User-Agent": "mergescout"}
         self.max_retries = max_retries
         self.reserve = reserve
         self.sleep = sleep
@@ -98,6 +99,10 @@ class GitHubGraphQL:
             try:
                 resp = self.client.post(self.URL, json={"query": query, "variables": variables or {}},
                                         headers=self.headers)
+            except httpx.LocalProtocolError as exc:
+                # The request itself is malformed (usually a bad character in the token); retrying cannot help.
+                raise GraphQLError(f"GitHub request could not be sent ({exc}); check the token for spaces or "
+                                   f"line breaks") from exc
             except httpx.TransportError as exc:
                 # Wi-Fi drops, DNS hiccups and timeouts are retried like server errors.
                 if attempt == self.max_retries:

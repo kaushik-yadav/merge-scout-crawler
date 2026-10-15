@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from mergescout.github.graphql import Gate, GitHubGraphQL
 
-# Hourly points relative to a personal token: a GitHub App also gets 5,000, the workflow token 1,000.
-SHARES = {"personal": 1.0, "app": 1.0, "actions": 0.2}
+# Hourly points relative to a personal token; GitHub reported 5,000 for all three on 2026-10-15.
+SHARES = {"personal": 1.0, "app": 1.0, "actions": 1.0}
 
 
 @dataclass
@@ -26,6 +26,7 @@ def identities_from_env(primary_token: str, max_wait: float | None, client=GitHu
              ("actions", os.environ.get("MS_ACTIONS_TOKEN"))]
     out, seen = [], set()
     for name, token in found:
+        token = (token or "").strip()
         if not token or token in seen:
             continue
         seen.add(token)
