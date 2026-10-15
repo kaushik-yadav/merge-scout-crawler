@@ -147,3 +147,31 @@ def test_latest_seed_sets_the_priority(tmp_path):
     s.upsert_repos(rows(1, prio=107))
     s.upsert_repos(rows(1, prio=40))
     assert s.claim(1, "r1")[0]["priority"] == 40
+
+
+def test_repos_fully_crawled_by_an_older_crawler_are_due_again(tmp_path):
+    from mergescout.crawl.state import CRAWL_VERSION
+    s = CrawlState(tmp_path / "c.sqlite", now=lambda: NOW)
+    s.upsert_repos(rows(2))
+    s.claim(2, "r1")
+    s.done(1, "r1", points=5, prs=1, issues=1, refresh_days=30, full=True)
+    s.done(2, "r1", points=5, prs=1, issues=1, refresh_days=30, full=True)
+    assert s.claim(2, "r2") == []
+    s.db.execute("UPDATE repos SET crawl_version = ? WHERE repo_id = 2", (CRAWL_VERSION - 1,))
+    again = s.claim(2, "r3")
+    assert [r["repo_id"] for r in again] == [2] and again[0]["crawl_version"] == CRAWL_VERSION - 1
+
+
+def test_old_state_files_start_at_crawl_version_one(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "c.sqlite")
+    db.execute("CREATE TABLE repos (repo_id INTEGER PRIMARY KEY, name TEXT NOT NULL, stars INTEGER, pushed_at TEXT, "
+               "priority INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER DEFAULT 0, "
+               "run_id TEXT, claimed_at TEXT, last_done_at TEXT, next_due TEXT, last_points INTEGER, "
+               "last_prs INTEGER, last_issues INTEGER, error TEXT, last_full_at TEXT)")
+    db.execute("INSERT INTO repos (repo_id, name, status, last_done_at, last_full_at, next_due) VALUES "
+               "(1, 'o/r', 'done', '2026-10-13T00:00:00+00:00', '2026-10-13T00:00:00+00:00', '2026-11-13T00:00:00+00:00')")
+    db.commit()
+    db.close()
+    s = CrawlState(tmp_path / "c.sqlite", now=lambda: NOW)
+    assert [(r["repo_id"], r["crawl_version"]) for r in s.claim(1, "r1")] == [(1, 1)]

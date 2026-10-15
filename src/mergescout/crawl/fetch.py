@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from mergescout.crawl.queries import (ISSUE_PAGE_QUERY, PR_PAGE_QUERY, REPO_META_QUERY, issues_by_number_query,
-                                      parse_issues, parse_prs, parse_repo_meta)
+from mergescout.crawl.queries import (CLOSED_ISSUES_QUERY, ISSUE_PAGE_QUERY, PR_PAGE_QUERY, REPO_META_QUERY,
+                                      issues_by_number_query, parse_closed_issues, parse_issues, parse_prs,
+                                      parse_repo_meta)
 from mergescout.github.graphql import GraphQLError, NotFound, too_heavy
+from mergescout.labels import OPPORTUNITY_LABELS, has_opportunity
 
 # Pages of 100 take 5-9 s on big repos and hit GitHub's 10 s limit under load; 50 costs the same points.
 MIN_PAGE = 10
@@ -29,6 +31,7 @@ class RepoBundle:
     error: str | None = None
     full: bool = True
     deleted_issues: list[int] = field(default_factory=list)
+    closed_issues: list[dict] = field(default_factory=list)
 
 
 def _walk(gql, query: str, variables: dict, connection: str, cap: int, page: int, bundle: RepoBundle,
@@ -59,7 +62,8 @@ def _walk(gql, query: str, variables: dict, connection: str, cap: int, page: int
 
 def fetch_repo(gql, repo_id: int, name: str, now: datetime, pr_cap: int = 300, issue_cap: int = 200,
                issue_days: int = 90, page: int = 50, track: list[int] = (), track_cap: int = 200,
-               pr_days: int = 365, changed_since: datetime | None = None) -> RepoBundle:
+               pr_days: int = 365, changed_since: datetime | None = None, closed_cap: int = 100,
+               closed_days: int = 365) -> RepoBundle:
     owner, repo = name.split("/", 1)
     bundle = RepoBundle(repo_id, name, full=changed_since is None)
     base = {"owner": owner, "name": repo}
@@ -100,6 +104,15 @@ def fetch_repo(gql, repo_id: int, name: str, now: datetime, pr_cap: int = 300, i
                     fresh.append(node)
                 else:
                     bundle.deleted_issues.append(number)
+        open_labels = [lb.get("name") for n in fresh if n.get("state", "OPEN") == "OPEN"
+                       for lb in (n.get("labels") or {}).get("nodes") or [] if lb]
+        if changed_since is None and closed_cap and has_opportunity(open_labels):
+            # Label trust needs past beginner issues and who fixed them; only full crawls of hot repos pay for it.
+            closed_since = cutoff(now, closed_days)
+            closed = _walk(gql, CLOSED_ISSUES_QUERY, {**base, "labels": list(OPPORTUNITY_LABELS)}, "issues",
+                           closed_cap, page, bundle, stop=lambda n: (n.get("updatedAt") or "") < closed_since)
+            bundle.closed_issues = parse_closed_issues(
+                repo_id, [n for n in closed if (n.get("updatedAt") or "") >= closed_since])
     except NotFound as exc:
         bundle.status, bundle.meta, bundle.error = "gone", None, str(exc)
         return bundle

@@ -6,12 +6,15 @@ from pathlib import Path
 
 from mergescout.labels import has_opportunity
 
+# Bump when full crawls start collecting new fields: repos fully crawled by an older version are re-crawled in full.
+CRAWL_VERSION = 2
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
   repo_id INTEGER PRIMARY KEY, name TEXT NOT NULL, stars INTEGER, pushed_at TEXT, priority INTEGER DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER DEFAULT 0, run_id TEXT, claimed_at TEXT,
   last_done_at TEXT, next_due TEXT, last_points INTEGER, last_prs INTEGER, last_issues INTEGER, error TEXT,
-  last_full_at TEXT);
+  last_full_at TEXT, crawl_version INTEGER DEFAULT 1);
 CREATE INDEX IF NOT EXISTS repos_claim ON repos(status, priority DESC, stars DESC);
 CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, kind TEXT, started_at TEXT, finished_at TEXT,
   points INTEGER, repos INTEGER, reason TEXT);
@@ -31,9 +34,12 @@ class CrawlState:
         with self.db:
             self.db.executescript(SCHEMA)
             # State files saved before refreshes became incremental: their crawls were all full ones.
-            if "last_full_at" not in {r[1] for r in self.db.execute("PRAGMA table_info(repos)")}:
+            columns = {r[1] for r in self.db.execute("PRAGMA table_info(repos)")}
+            if "last_full_at" not in columns:
                 self.db.execute("ALTER TABLE repos ADD COLUMN last_full_at TEXT")
                 self.db.execute("UPDATE repos SET last_full_at = last_done_at WHERE last_done_at IS NOT NULL")
+            if "crawl_version" not in columns:
+                self.db.execute("ALTER TABLE repos ADD COLUMN crawl_version INTEGER DEFAULT 1")
 
     def _ts(self) -> str:
         return self.now().isoformat(timespec="seconds")
@@ -58,9 +64,10 @@ class CrawlState:
         now = self._ts()
         with self.lock, self.db:
             rows = self.db.execute(
-                "SELECT repo_id, name, stars, priority, last_done_at, last_full_at FROM repos WHERE status = 'queued' "
-                "OR (status = 'done' AND next_due IS NOT NULL AND next_due <= ?) "
-                "ORDER BY priority DESC, stars DESC LIMIT ?", (now, n)).fetchall()
+                "SELECT repo_id, name, stars, priority, last_done_at, last_full_at, crawl_version FROM repos "
+                "WHERE status = 'queued' OR (status = 'done' AND ((next_due IS NOT NULL AND next_due <= ?) "
+                "OR crawl_version < ?)) ORDER BY priority DESC, stars DESC LIMIT ?",
+                (now, CRAWL_VERSION, n)).fetchall()
             for r in rows:
                 self.db.execute("UPDATE repos SET status = 'running', run_id = ?, claimed_at = ?, "
                                 "attempts = attempts + 1 WHERE repo_id = ?", (run_id, now, r["repo_id"]))
@@ -73,8 +80,9 @@ class CrawlState:
         with self.lock, self.db:
             self.db.execute("UPDATE repos SET status = 'done', last_done_at = ?, next_due = ?, last_points = ?, "
                             "last_prs = ?, last_issues = ?, error = NULL, attempts = 0, "
-                            "last_full_at = CASE WHEN ? THEN ? ELSE last_full_at END WHERE repo_id = ?",
-                            (now, due, points, prs, issues, full, now, repo_id))
+                            "last_full_at = CASE WHEN ? THEN ? ELSE last_full_at END, "
+                            "crawl_version = CASE WHEN ? THEN ? ELSE crawl_version END WHERE repo_id = ?",
+                            (now, due, points, prs, issues, full, now, full, CRAWL_VERSION, repo_id))
 
     def fail(self, repo_id: int, run_id: str, error: str) -> None:
         with self.lock, self.db:

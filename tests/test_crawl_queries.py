@@ -84,3 +84,43 @@ def test_repo_meta_keeps_open_backlog_counts():
     meta = parse_repo_meta(1, {"repository": {"openPrs": {"totalCount": 412}, "openIssues": {"totalCount": 90}}})
     assert (meta["open_prs"], meta["open_issues"]) == (412, 90)
     assert parse_repo_meta(1, {"repository": {}})["open_prs"] is None
+
+
+def test_label_normalization_and_opportunity():
+    from mergescout.labels import has_opportunity, norm_label
+    assert norm_label("Good-First-Issue :wave:") == "good first issue"
+    assert norm_label("help_wanted") == "help wanted"
+    assert has_opportunity(["bug", "Good First Issue"]) and not has_opportunity(["bug"])
+
+
+def test_closed_unmerged_links_and_contributing_text():
+    issues, _ = parse_issues(1, [{"number": 3, "closedByPullRequestsReferences": {"nodes": [
+        {"number": 1, "state": "CLOSED"}, {"number": 2, "state": "MERGED"}, {"number": 4, "state": "CLOSED"}]}}])
+    assert issues[0]["linked_closed_prs"] == 2
+    meta = parse_repo_meta(1, {"repository": {"contributing2": {"oid": "abc", "text": "Sign the CLA. " * 500}}})
+    assert meta["contributing_sha"] == "abc" and len(meta["contributing_excerpt"]) == 4000
+
+
+def test_parse_closed_issues_prefers_the_merged_fix():
+    from mergescout.crawl.queries import parse_closed_issues
+    rows = parse_closed_issues(1, [None, {"number": 9, "stateReason": "COMPLETED", "closedAt": "2026-09-01T00:00:00Z",
+        "labels": {"nodes": [{"name": "good first issue"}]},
+        "closedByPullRequestsReferences": {"nodes": [
+            {"number": 20, "state": "CLOSED", "author": {"login": "a"}, "authorAssociation": "NONE"},
+            {"number": 21, "state": "MERGED", "author": {"login": "b"}, "authorAssociation": "CONTRIBUTOR"}]}}])
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r["fix_pr"], r["fix_pr_state"], r["fix_author"], r["fix_association"]) == (21, "MERGED", "b", "CONTRIBUTOR")
+    assert r["labels"] == ["good first issue"] and r["state_reason"] == "COMPLETED"
+
+
+def test_refreshed_closed_issue_carries_its_fix():
+    # Refreshes deliver closed issues through the normal issue query, so issue rows keep the fixing PR too.
+    from mergescout.crawl.queries import ISSUE_FIELDS
+    assert "nodes { number state author { login } authorAssociation }" in " ".join(ISSUE_FIELDS.split())
+    issues, _ = parse_issues(1, [{"number": 9, "state": "CLOSED", "stateReason": "COMPLETED",
+        "closedByPullRequestsReferences": {"nodes": [
+            {"number": 20, "state": "CLOSED", "author": {"login": "a"}, "authorAssociation": "NONE"},
+            {"number": 21, "state": "MERGED", "author": {"login": "b"}, "authorAssociation": "CONTRIBUTOR"}]}}])
+    r = issues[0]
+    assert (r["fix_pr"], r["fix_pr_state"], r["fix_author"], r["fix_association"]) == (21, "MERGED", "b", "CONTRIBUTOR")

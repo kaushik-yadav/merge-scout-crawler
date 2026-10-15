@@ -36,4 +36,11 @@ def test_each_flush_is_a_new_file_and_empty_flush_writes_nothing(tmp_path):
 
 
 def test_every_table_has_a_schema():
-    assert {"repo_meta", "prs", "issues", "comments", "issue_events"} <= set(SCHEMAS)
+    assert {"repo_meta", "prs", "issues", "comments", "issue_events", "closed_issues"} <= set(SCHEMAS)
+
+
+def test_rows_are_stamped_with_fetch_time(tmp_path):
+    w = BatchWriter(tmp_path, "r1", now=lambda: T)
+    w.add("closed_issues", [{"repo_id": 1, "number": 2, "labels": ["good first issue"]}])
+    t = pq.read_table(w.flush()["closed_issues"])
+    assert t.column("fetched_at").to_pylist() == [T] and "fix_author" in t.column_names

@@ -253,3 +253,17 @@ def test_parallel_requests_drop_when_github_asks_to_slow_down_and_grow_back(tmp_
     per = out["identities"]["personal"]
     assert out["repos"] == 60 and per["lowest_slots"] < 8 and per["slots"] > per["lowest_slots"]
     assert any("slow down" in line for line in logs)
+
+
+def test_a_repo_from_an_older_crawler_gets_a_full_crawl(tmp_path):
+    from mergescout.crawl.state import CRAWL_VERSION
+    clock = [NOW]
+    s = seed(tmp_path, 1, clock=lambda: clock[0])
+    b = budget()
+    run_crawl(s, lambda: GQL(b), tmp_path, "r1", minutes=5, in_flight=1, now=lambda: clock[0], log=lambda *a: None)
+    s.db.execute("UPDATE repos SET crawl_version = ?", (CRAWL_VERSION - 1,))
+    b["calls"].clear()
+    clock[0] = NOW + timedelta(hours=3)
+    run_crawl(s, lambda: GQL(b), tmp_path, "r2", minutes=5, in_flight=1, now=lambda: clock[0], log=lambda *a: None)
+    assert [v["order"] for q, v in b["calls"] if "pullRequests(first:" in q] == ["CREATED_AT"]
+    assert s.db.execute("SELECT crawl_version FROM repos").fetchone()[0] == CRAWL_VERSION

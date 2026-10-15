@@ -165,3 +165,35 @@ def test_first_crawl_reads_at_most_200_open_issues(fake_gql):
     gql = fake_gql(responder_factory({None: page("pullRequests", [], False)}, issue_pages))
     b = fetch_repo(gql, 1, "o/r", NOW)
     assert len(b.issues) == 200 and sum("issues(first:" in q for q, _ in gql.calls) == 4
+
+
+def closed_page_responder(hot_labels):
+    hot = {**issue(1, "2026-10-10T00:00:00Z"), "labels": {"nodes": [{"name": n} for n in hot_labels]}}
+    closed = page("issues", [{"number": 5, "updatedAt": "2026-09-01T00:00:00Z", "closedAt": "2026-09-01T00:00:00Z"},
+                             {"number": 6, "updatedAt": "2025-01-01T00:00:00Z"}], True, "z")
+
+    def responder(query, variables):
+        if "states: CLOSED" in query:
+            return closed, 1
+        if "issues(first:" in query:
+            return page("issues", [hot], False), 1
+        if "pullRequests(first:" in query:
+            return page("pullRequests", [], False), 1
+        return META, 1
+    return responder
+
+
+def test_closed_labelled_issues_only_for_hot_repos_and_stop_at_cutoff(fake_gql):
+    gql = fake_gql(closed_page_responder(["Good First Issue"]))
+    b = fetch_repo(gql, 1, "o/r", NOW)
+    assert [c["number"] for c in b.closed_issues] == [5]
+    assert sum("states: CLOSED" in q for q, _ in gql.calls) == 1
+    cold = fake_gql(closed_page_responder(["bug"]))
+    assert fetch_repo(cold, 1, "o/r", NOW).closed_issues == []
+    assert not any("states: CLOSED" in q for q, _ in cold.calls)
+
+
+def test_refresh_skips_the_closed_issue_history(fake_gql):
+    gql = fake_gql(closed_page_responder(["Good First Issue"]))
+    fetch_repo(gql, 1, "o/r", NOW, changed_since=datetime(2026, 10, 1, tzinfo=timezone.utc))
+    assert not any("states: CLOSED" in q for q, _ in gql.calls)

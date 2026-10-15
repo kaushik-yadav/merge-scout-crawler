@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mergescout.crawl.fetch import cutoff, fetch_repo
 from mergescout.crawl.outcomes import apply_outcomes, plan_outcomes
-from mergescout.crawl.state import CrawlState
+from mergescout.crawl.state import CRAWL_VERSION, CrawlState
 from mergescout.crawl.writer import BatchWriter
 from mergescout.github.graphql import Gate, RateLimited, TokenRejected
 from mergescout.github.identities import Identity, slots
@@ -21,7 +21,8 @@ def is_hot(issues: list[dict]) -> bool:
 def changed_since(repo: dict, now: datetime, full_every_days: int) -> datetime | None:
     # Refreshes ask only for changes since the last crawl (two hours of overlap); a full crawl comes back monthly.
     last, full = parse_time(repo.get("last_done_at")), parse_time(repo.get("last_full_at"))
-    if last is None or full is None or now - full >= timedelta(days=full_every_days):
+    outdated = (repo.get("crawl_version") or CRAWL_VERSION) < CRAWL_VERSION
+    if last is None or full is None or outdated or now - full >= timedelta(days=full_every_days):
         return None
     return last - timedelta(hours=2)
 
@@ -147,6 +148,7 @@ def run_crawl(state: CrawlState, make_gql, data_dir: Path, run_id: str, *, minut
                     writer.add("prs", bundle.prs)
                     writer.add("issues", bundle.issues)
                     writer.add("comments", bundle.comments)
+                    writer.add("closed_issues", bundle.closed_issues)
                     today = now()
                     events, keep, forget = plan_outcomes(state, repo["repo_id"], bundle.issues, today.date().isoformat(),
                                                          cutoff(today, issue_days), bundle.deleted_issues)
