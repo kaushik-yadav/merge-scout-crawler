@@ -5,7 +5,7 @@ from mergescout.crawl.queries import (CLOSED_ISSUES_QUERY, ISSUE_PAGE_QUERY, PR_
                                       issues_by_number_query, parse_closed_issues, parse_issues, parse_prs,
                                       parse_repo_meta)
 from mergescout.github.graphql import GraphQLError, NotFound, too_heavy
-from mergescout.labels import OPPORTUNITY_LABELS, has_opportunity
+from mergescout.labels import HOT, OPPORTUNITY_LABELS, has_opportunity, norm_label
 
 # Pages of 100 take 5-9 s on big repos and hit GitHub's 10 s limit under load; 50 costs the same points.
 MIN_PAGE = 10
@@ -109,8 +109,11 @@ def fetch_repo(gql, repo_id: int, name: str, now: datetime, pr_cap: int = 300, i
         if changed_since is None and closed_cap and has_opportunity(open_labels):
             # Label trust needs past beginner issues and who fixed them; only full crawls of hot repos pay for it.
             closed_since = cutoff(now, closed_days)
-            closed = _walk(gql, CLOSED_ISSUES_QUERY, {**base, "labels": list(OPPORTUNITY_LABELS)}, "issues",
-                           closed_cap, page, bundle, stop=lambda n: (n.get("updatedAt") or "") < closed_since)
+            # GitHub matches label names exactly, so ask with this repo's own spellings ("good first issue :wave:").
+            hot_names = [n for n in (bundle.meta or {}).get("label_names") or [] if norm_label(n) in HOT]
+            closed = _walk(gql, CLOSED_ISSUES_QUERY, {**base, "labels": hot_names or list(OPPORTUNITY_LABELS)},
+                           "issues", closed_cap, page, bundle,
+                           stop=lambda n: (n.get("updatedAt") or "") < closed_since)
             bundle.closed_issues = parse_closed_issues(
                 repo_id, [n for n in closed if (n.get("updatedAt") or "") >= closed_since])
     except NotFound as exc:

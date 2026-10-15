@@ -16,7 +16,8 @@ SCHEMAS = {
         ("default_branch", pa.string()), ("contributing_sha", pa.string()), ("ai_policy_sha", pa.string()),
         ("pr_template_sha", pa.string()), ("readme_excerpt", pa.string()), ("last_release_at", TS),
         ("releases_12m", pa.int32()), ("open_prs", pa.int32()), ("open_issues", pa.int32()),
-        ("contributing_excerpt", pa.string()),
+        ("contributing_excerpt", pa.string()), ("label_names", pa.list_(pa.string())),
+        ("owner_logins", pa.list_(pa.string())),
         ("run_id", pa.string()), ("fetched_at", TS)]),
     "prs": pa.schema([
         ("repo_id", pa.int64()), ("number", pa.int32()), ("created_at", TS), ("merged_at", TS), ("closed_at", TS),
@@ -37,8 +38,8 @@ SCHEMAS = {
         ("fix_pr_state", pa.string()), ("fix_author", pa.string()), ("fix_association", pa.string()), ("run_id", pa.string()), ("fetched_at", TS)]),
     "comments": pa.schema([
         ("repo_id", pa.int64()), ("number", pa.int32()), ("comment_id", pa.int64()), ("created_at", TS),
-        ("author_login", pa.string()), ("author_association", pa.string()), ("body_excerpt", pa.string()),
-        ("run_id", pa.string()), ("fetched_at", TS)]),
+        ("author_login", pa.string()), ("author_type", pa.string()), ("author_association", pa.string()),
+        ("body_excerpt", pa.string()), ("run_id", pa.string()), ("fetched_at", TS)]),
     "issue_events": pa.schema([
         ("repo_id", pa.int64()), ("number", pa.int32()), ("event", pa.string()), ("detail", pa.string()),
         ("observed_at", pa.string()), ("run_id", pa.string()), ("fetched_at", TS)]),

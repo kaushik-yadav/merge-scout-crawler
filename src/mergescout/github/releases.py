@@ -13,11 +13,14 @@ class ReleaseError(RuntimeError):
 
 class Releases:
     # Release assets in our own repo are the durable store for crawl data and state backups.
-    def __init__(self, token: str, repo: str, client: httpx.Client | None = None):
+    def __init__(self, token: str | None, repo: str, client: httpx.Client | None = None):
         self.repo = repo
         self.client = client or httpx.Client(timeout=httpx.Timeout(300.0, connect=15.0), follow_redirects=True)
-        self.headers = {"Authorization": f"Bearer {token.strip()}", "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mergescout"}
+        self.headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+                        "User-Agent": "mergescout"}
+        # Public data downloads need no token; private repos and uploads do.
+        if token and token.strip():
+            self.headers["Authorization"] = f"Bearer {token.strip()}"
 
     @staticmethod
     def _check(resp: httpx.Response, what: str) -> httpx.Response:
@@ -80,6 +83,14 @@ class Releases:
     def delete_asset(self, asset: dict) -> None:
         self._check(self.client.delete(f"{API}/repos/{self.repo}/releases/assets/{asset['id']}", headers=self.headers),
                     f"deleting {asset.get('name', asset['id'])}")
+
+    def delete_release(self, release: dict) -> None:
+        self._check(self.client.delete(f"{API}/repos/{self.repo}/releases/{release['id']}", headers=self.headers),
+                    f"deleting release {release['tag_name']}")
+        # The tag stays behind otherwise; a missing tag is fine.
+        resp = self.client.delete(f"{API}/repos/{self.repo}/git/refs/tags/{release['tag_name']}", headers=self.headers)
+        if resp.status_code not in (204, 404, 422):
+            self._check(resp, f"deleting tag {release['tag_name']}")
 
     def download(self, tag: str, name: str, dest: Path) -> bool:
         release = self.get(tag)

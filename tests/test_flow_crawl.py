@@ -323,3 +323,15 @@ def test_closed_labelled_issues_only_for_hot_repos_and_stop_at_cutoff(fake_gql):
     cold = fake_gql(closed_page_responder(["bug"]))
     assert fetch_repo(cold, 1, "o/r", NOW).closed_issues == []
     assert not any("states: CLOSED" in q for q, _ in cold.calls)
+
+
+def test_closed_history_asks_for_the_repo_s_own_label_spellings(fake_gql):
+    # GitHub matches label names exactly; decorated labels got no closed history before (Phase 2 review).
+    meta = {"repository": {**META["repository"],
+                           "labelNames": {"nodes": [{"name": "good first issue :wave:"}, {"name": "bug"}]}}}
+    responder = closed_page_responder(["good first issue :wave:"])
+    gql = fake_gql(lambda q, v: (meta, 1) if "labelNames" in q else responder(q, v))
+    fetch_repo(gql, 1, "o/r", NOW)
+    closed = [v for q, v in gql.calls if "states: CLOSED" in q]
+    assert closed and closed[0]["labels"] == ["good first issue :wave:"]
+

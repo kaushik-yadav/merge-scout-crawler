@@ -56,7 +56,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - if: steps.guard.outputs.skip != 'true'
-        run: pip install .
+        run: pip install ".[crawl]"
       - name: Restore state from the releases if the cache is gone
         if: steps.guard.outputs.skip != 'true' && steps.cache.outputs.cache-matched-key == ''
         run: python -m mergescout.store pull

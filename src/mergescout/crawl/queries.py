@@ -1,8 +1,10 @@
 import re
 
+from mergescout.owners import owner_logins
 from mergescout.timeutil import parse_time
 
 RL = "rateLimit { cost remaining resetAt }"
+OWNER_KEYS = ("codeowners", "codeowners2", "codeowners3", "maintainers", "maintainers2", "owners")
 
 PR_PAGE_QUERY = f"""
 query($owner: String!, $name: String!, $cursor: String, $n: Int!, $order: IssueOrderField!) {{
@@ -27,7 +29,7 @@ ISSUE_FIELDS = """
         labels(first: 10) { nodes { name } }
         assignees(first: 5) { totalCount }
         closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { number state author { login } authorAssociation } }
-        comments(last: 5) { totalCount nodes { databaseId createdAt author { login } authorAssociation bodyText } }
+        comments(last: 5) { totalCount nodes { databaseId createdAt author { __typename login } authorAssociation bodyText } }
 """
 
 ISSUE_PAGE_QUERY = f"""
@@ -63,6 +65,13 @@ query($owner: String!, $name: String!) {{
     aipolicy: object(expression: "HEAD:AI_POLICY.md") {{ oid }}
     prtemplate: object(expression: "HEAD:.github/PULL_REQUEST_TEMPLATE.md") {{ oid }}
     readme: object(expression: "HEAD:README.md") {{ ... on Blob {{ text }} }}
+    labelNames: labels(first: 100) {{ nodes {{ name }} }}
+    codeowners: object(expression: "HEAD:.github/CODEOWNERS") {{ ... on Blob {{ text }} }}
+    codeowners2: object(expression: "HEAD:CODEOWNERS") {{ ... on Blob {{ text }} }}
+    codeowners3: object(expression: "HEAD:docs/CODEOWNERS") {{ ... on Blob {{ text }} }}
+    maintainers: object(expression: "HEAD:MAINTAINERS") {{ ... on Blob {{ text }} }}
+    maintainers2: object(expression: "HEAD:MAINTAINERS.md") {{ ... on Blob {{ text }} }}
+    owners: object(expression: "HEAD:OWNERS") {{ ... on Blob {{ text }} }}
     releases(first: 20, orderBy: {{field: CREATED_AT, direction: DESC}}) {{ totalCount nodes {{ createdAt }} }}
   }}
 }}
@@ -153,6 +162,7 @@ def parse_issues(repo_id: int, nodes: list) -> tuple[list[dict], list[dict]]:
                 comments.append({"repo_id": repo_id, "number": n.get("number"), "comment_id": c.get("databaseId"),
                                  "created_at": parse_time(c.get("createdAt")),
                                  "author_login": (c.get("author") or {}).get("login"),
+                                 "author_type": (c.get("author") or {}).get("__typename"),
                                  "author_association": c.get("authorAssociation"),
                                  "body_excerpt": (c.get("bodyText") or "")[:500]})
     return issues, comments
@@ -179,6 +189,9 @@ def parse_repo_meta(repo_id: int, data: dict) -> dict:
         "readme_excerpt": ((r.get("readme") or {}).get("text") or "")[:2000],
         "last_release_at": newest,
         "releases_12m": sum(1 for d in dates if newest and (newest - d).days <= 365),
+        "label_names": [lb["name"] for lb in (r.get("labelNames") or {}).get("nodes") or [] if lb and lb.get("name")],
+        # Logins only, never the file text: owner files can be large.
+        "owner_logins": sorted(owner_logins("\n".join((r.get(k) or {}).get("text") or "" for k in OWNER_KEYS))),
     }
 
 
