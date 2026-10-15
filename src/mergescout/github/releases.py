@@ -66,6 +66,17 @@ class Releases:
                                     params={"name": name}, headers=headers, content=f)
         return self._check(resp, f"uploading {name}").json()
 
+    def list_releases(self) -> list[dict]:
+        out, page = [], 1
+        while True:
+            resp = self.client.get(f"{API}/repos/{self.repo}/releases", headers=self.headers,
+                                   params={"per_page": 100, "page": page})
+            batch = self._check(resp, "listing releases").json()
+            out.extend(batch)
+            if len(batch) < 100:
+                return out
+            page += 1
+
     def delete_asset(self, asset: dict) -> None:
         self._check(self.client.delete(f"{API}/repos/{self.repo}/releases/assets/{asset['id']}", headers=self.headers),
                     f"deleting {asset.get('name', asset['id'])}")
@@ -75,6 +86,11 @@ class Releases:
         asset = next((a for a in self.assets(release) if a["name"] == name), None) if release else None
         if asset is None:
             return False
+        self.download_asset(asset, dest)
+        return True
+
+    def download_asset(self, asset: dict, dest: Path) -> None:
+        name = asset.get("name", asset["id"])
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
         headers = {**self.headers, "Accept": "application/octet-stream"}
@@ -87,4 +103,3 @@ class Releases:
                 for chunk in resp.iter_bytes():
                     f.write(chunk)
         os.replace(part, dest)
-        return True

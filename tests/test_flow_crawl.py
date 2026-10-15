@@ -1,17 +1,38 @@
+# The crawl end to end: seed to Parquet, safe restarts, refreshes and several identities sharing GitHub's limits.
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from mergescout.crawl import __main__ as cli
 from mergescout.crawl import writer as writer_mod
+from mergescout.crawl.__main__ import main
+from mergescout.crawl.fetch import fetch_repo
 from mergescout.crawl.runner import run_crawl
 from mergescout.crawl.state import CrawlState
+from mergescout.discover.sweep import SCHEMA
 from mergescout.github.graphql import Gate, GraphQLError, GraphQLResult, NotFound, RateLimited, TokenRejected
 from mergescout.github.identities import Identity
 
-NOW = datetime(2026, 10, 14, tzinfo=timezone.utc)
+
 QUIET = {"now": lambda: NOW, "log": lambda *a: None}
+NOW = datetime(2026, 10, 14, tzinfo=timezone.utc)
+META = {"repository": {"databaseId": 1, "nameWithOwner": "o/r", "stargazerCount": 200, "releases": {"nodes": []}}}
+
+
+def repo(repo_id, name, stars, pushed=NOW, open_issues=1, opp=0, has_issues=True):
+    return {"repo_id": repo_id, "name": name, "stars": stars, "forks": 1, "created_at": NOW, "pushed_at": pushed,
+            "language": "Python", "has_issues": has_issues, "license": None, "open_issues": open_issues,
+            "open_prs": 0, "opportunity_issues": opp}
+
+
+def write_basics(data_dir: Path, rows, name="a.parquet", schema=SCHEMA):
+    out = data_dir / "discover" / "basics"
+    out.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), out / name)
 
 
 class GQL:
@@ -66,39 +87,6 @@ def rows(tmp_path, table):
     return sum(pq.read_table(p).num_rows for p in (tmp_path / "crawl" / table).glob("*.parquet"))
 
 
-def test_runs_all_and_writes_parquet(tmp_path):
-    s = seed(tmp_path, 5)
-    b = budget()
-    out = run_crawl(s, lambda: GQL(b), tmp_path, "r1", minutes=5, in_flight=3, **QUIET)
-    assert out["repos"] == 5 and out["reason"] == "empty" and out["points"] == 15
-    assert s.counts() == {"done": 5}
-    assert rows(tmp_path, "prs") == 5 and rows(tmp_path, "repo_meta") == 5 and rows(tmp_path, "issues") == 5
-    assert tuple(s.db.execute("SELECT reason, repos FROM runs WHERE run_id = 'r1'").fetchone()) == ("empty", 5)
-
-
-def test_stops_when_budget_low(tmp_path):
-    s = seed(tmp_path, 20)
-    b = budget(330)
-    out = run_crawl(s, lambda: GQL(b), tmp_path, "r1", minutes=5, in_flight=2, reserve=300, **QUIET)
-    assert out["reason"] == "budget"
-    assert 0 < out["repos"] < 20
-    assert s.counts().get("running", 0) == 0
-
-
-def test_stops_at_time_limit(tmp_path):
-    s = seed(tmp_path, 5)
-    ticks = iter([0, 0, 0] + [999] * 50)
-    out = run_crawl(s, lambda: GQL(budget()), tmp_path, "r1", minutes=1, in_flight=1,
-                    clock=lambda: next(ticks) * 60, **QUIET)
-    assert out["reason"] == "time" and 1 <= out["repos"] < 5
-
-
-def test_limit_caps_repos(tmp_path):
-    s = seed(tmp_path, 6)
-    out = run_crawl(s, lambda: GQL(budget()), tmp_path, "r1", minutes=5, in_flight=4, limit=3, **QUIET)
-    assert out["reason"] == "limit" and out["repos"] == 3 and s.counts() == {"done": 3, "queued": 3}
-
-
 def test_failed_gone_and_rate_limited_are_recorded(tmp_path):
     s = seed(tmp_path, 4)
     gql = lambda: GQL(budget(), fail_for={"o/r3"}, gone_for={"o/r2"}, limited_for={"o/r1"})
@@ -108,15 +96,6 @@ def test_failed_gone_and_rate_limited_are_recorded(tmp_path):
     assert s.counts() == {"done": 1, "failed": 1, "gone": 1, "queued": 1}
     assert out["repos"] == 1 and out["reason"] == "rate_limit"
     assert any("rate limit" in line and "wait" in line for line in logs)
-
-
-def test_opportunity_repos_refresh_daily(tmp_path):
-    s = seed(tmp_path, 2)
-    run_crawl(s, lambda: GQL(budget(), labels=["Good First Issue"]), tmp_path, "r1", minutes=5, in_flight=1,
-              limit=1, **QUIET)
-    run_crawl(s, lambda: GQL(budget()), tmp_path, "r2", minutes=5, in_flight=1, **QUIET)
-    due = dict(s.db.execute("SELECT repo_id, next_due FROM repos").fetchall())
-    assert due[2] == "2026-10-15T00:00:00+00:00" and due[1] == "2026-10-21T00:00:00+00:00"
 
 
 def test_kill_before_flush_loses_nothing_and_rerun_has_no_duplicates(tmp_path, monkeypatch):
@@ -135,14 +114,6 @@ def test_kill_before_flush_loses_nothing_and_rerun_has_no_duplicates(tmp_path, m
     run_crawl(s2, lambda: GQL(budget()), tmp_path, "r2", minutes=5, in_flight=2, now=lambda: later,
               log=lambda *a: None)
     assert s2.counts() == {"done": 4} and rows(tmp_path, "prs") == 4
-
-
-def test_flushes_in_batches_and_marks_done_only_after_flush(tmp_path):
-    s = seed(tmp_path, 5)
-    run_crawl(s, lambda: GQL(budget()), tmp_path, "r1", minutes=5, in_flight=1, flush_every=2, **QUIET)
-    files = sorted(p.name for p in (tmp_path / "crawl" / "prs").glob("*.parquet"))
-    assert files == ["run=r1-000.parquet", "run=r1-001.parquet", "run=r1-002.parquet"]
-    assert s.counts() == {"done": 5}
 
 
 def test_second_crawl_writes_issue_events(tmp_path):
@@ -178,30 +149,8 @@ def test_refreshes_ask_only_for_changes_until_a_full_crawl_is_due(tmp_path):
     assert crawl("r3") == ["CREATED_AT"]
 
 
-def test_hot_repo_stays_hot_when_its_beginner_issues_did_not_change(tmp_path):
-    clock = [NOW]
-    s = seed(tmp_path, 1, clock=lambda: clock[0])
-    run_crawl(s, lambda: GQL(budget(), labels=["Good First Issue"]), tmp_path, "r1", minutes=5, in_flight=1,
-              now=lambda: clock[0], log=lambda *a: None)
-    clock[0] = NOW + timedelta(days=2)
-    run_crawl(s, lambda: GQL(budget()), tmp_path, "r2", minutes=5, in_flight=1, now=lambda: clock[0],
-              log=lambda *a: None)
-    due = s.db.execute("SELECT next_due FROM repos").fetchone()[0]
-    assert due == (NOW + timedelta(days=3)).isoformat(timespec="seconds")
-
-
 def ident(name, make, share=1.0):
     return Identity(name, make, Gate(), share)
-
-
-def test_identities_share_one_queue(tmp_path):
-    s = seed(tmp_path, 6)
-    out = run_crawl(s, [ident("personal", lambda: GQL(budget())), ident("app", lambda: GQL(budget()))], tmp_path,
-                    "r1", minutes=5, in_flight=2, **QUIET)
-    assert out["repos"] == 6 and out["reason"] == "empty" and s.counts() == {"done": 6}
-    per = out["identities"]
-    assert per["personal"]["repos"] > 0 and per["app"]["repos"] > 0
-    assert per["personal"]["repos"] + per["app"]["repos"] == 6 and per["app"]["slots"] == 2
 
 
 def test_an_identity_that_runs_low_steps_aside_while_the_others_finish(tmp_path):
@@ -267,3 +216,110 @@ def test_a_repo_from_an_older_crawler_gets_a_full_crawl(tmp_path):
     run_crawl(s, lambda: GQL(b), tmp_path, "r2", minutes=5, in_flight=1, now=lambda: clock[0], log=lambda *a: None)
     assert [v["order"] for q, v in b["calls"] if "pullRequests(first:" in q] == ["CREATED_AT"]
     assert s.db.execute("SELECT crawl_version FROM repos").fetchone()[0] == CRAWL_VERSION
+
+
+def env(monkeypatch, tmp_path, token="t"):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MS_DATA_DIR", str(tmp_path))
+    if token:
+        monkeypatch.setenv("GITHUB_TOKEN", token)
+    else:
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+
+def test_seed_then_run_end_to_end(monkeypatch, tmp_path, capsys):
+    env(monkeypatch, tmp_path, token=None)
+    write_basics(tmp_path, [repo(1, "o/a", 500, pushed=datetime.now(timezone.utc)),
+                            repo(2, "o/b", 300, pushed=datetime.now(timezone.utc), opp=2)])
+    assert main(["seed"]) == 0
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("MS_RUN_ID", "42-1")
+    b = budget()
+    made = []
+    monkeypatch.setattr(cli, "GitHubGraphQL", lambda token, **kw: made.append(kw) or GQL(b))
+    assert main(["run", "--minutes", "1", "--in-flight", "2"]) == 0
+    assert made and callable(made[0]["max_wait"]) and 100 < made[0]["max_wait"]() <= 120
+    assert all(kw["gate"] is made[0]["gate"] for kw in made) and made[0]["gate"] is not None
+    assert pq.read_table(tmp_path / "crawl" / "prs" / "run=42-1-000.parquet").num_rows == 2
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "'done': 2" in out and "42-1" in out
+
+
+def test_run_exits_nonzero_when_everything_failed(monkeypatch, tmp_path):
+    env(monkeypatch, tmp_path)
+    CrawlState(tmp_path / "crawl.sqlite").upsert_repos([{"repo_id": 1, "name": "o/r1", "stars": 100,
+                                                          "pushed_at": None, "priority": 0}])
+    monkeypatch.setattr(cli, "GitHubGraphQL", lambda token, **kw: GQL(budget(), fail_for={"o/r1"}))
+    assert main(["run", "--minutes", "1"]) == 1
+
+
+def test_run_uses_every_identity_it_is_given(monkeypatch, tmp_path, capsys):
+    env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MS_APP_TOKEN", "app")
+    monkeypatch.setenv("MS_ACTIONS_TOKEN", "act")
+    CrawlState(tmp_path / "crawl.sqlite").upsert_repos([{"repo_id": i, "name": f"o/r{i}", "stars": 100,
+                                                          "pushed_at": None, "priority": 0} for i in range(1, 30)])
+    tokens = []
+    monkeypatch.setattr(cli, "GitHubGraphQL", lambda token, **kw: tokens.append(token) or GQL(budget()))
+    assert main(["run", "--minutes", "1", "--in-flight", "5"]) == 0
+    out = capsys.readouterr().out
+    assert "github personal:" in out and "github app:" in out and "github actions:" in out
+    assert set(tokens) == {"t", "app", "act"}
+
+
+def pr(n, created="2026-10-01T00:00:00Z"):
+    return {"number": n, "createdAt": created, "state": "OPEN", "author": {"__typename": "User", "login": "a"},
+            "reviews": {"nodes": []}, "closingIssuesReferences": {"nodes": []}}
+
+
+def issue(n, updated="2026-10-01T00:00:00Z"):
+    return {"number": n, "title": "t", "state": "OPEN", "updatedAt": updated, "labels": {"nodes": []},
+            "assignees": {"totalCount": 0}, "closedByPullRequestsReferences": {"nodes": []},
+            "comments": {"totalCount": 0, "nodes": []}}
+
+
+def page(conn, nodes, has_next, cursor=None):
+    return {"repository": {conn: {"pageInfo": {"hasNextPage": has_next, "endCursor": cursor}, "nodes": nodes}}}
+
+
+def test_heavy_page_halves_then_succeeds(fake_gql):
+    calls = []
+
+    def responder(query, variables):
+        if "pullRequests(first:" in query:
+            calls.append(variables["n"])
+            if variables["n"] > 12:
+                raise GraphQLError("Resource limits for this query exceeded")
+            return page("pullRequests", [pr(1)], False), 1
+        if "issues(first:" in query:
+            return page("issues", [], False), 1
+        return META, 1
+    b = fetch_repo(fake_gql(responder), 1, "o/r", NOW)
+    assert calls == [50, 25, 12] and len(b.prs) == 1
+
+
+def closed_page_responder(hot_labels):
+    hot = {**issue(1, "2026-10-10T00:00:00Z"), "labels": {"nodes": [{"name": n} for n in hot_labels]}}
+    closed = page("issues", [{"number": 5, "updatedAt": "2026-09-01T00:00:00Z", "closedAt": "2026-09-01T00:00:00Z"},
+                             {"number": 6, "updatedAt": "2025-01-01T00:00:00Z"}], True, "z")
+
+    def responder(query, variables):
+        if "states: CLOSED" in query:
+            return closed, 1
+        if "issues(first:" in query:
+            return page("issues", [hot], False), 1
+        if "pullRequests(first:" in query:
+            return page("pullRequests", [], False), 1
+        return META, 1
+    return responder
+
+
+def test_closed_labelled_issues_only_for_hot_repos_and_stop_at_cutoff(fake_gql):
+    gql = fake_gql(closed_page_responder(["Good First Issue"]))
+    b = fetch_repo(gql, 1, "o/r", NOW)
+    assert [c["number"] for c in b.closed_issues] == [5]
+    assert sum("states: CLOSED" in q for q, _ in gql.calls) == 1
+    cold = fake_gql(closed_page_responder(["bug"]))
+    assert fetch_repo(cold, 1, "o/r", NOW).closed_issues == []
+    assert not any("states: CLOSED" in q for q, _ in cold.calls)

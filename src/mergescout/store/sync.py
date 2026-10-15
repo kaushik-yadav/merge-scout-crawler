@@ -124,3 +124,25 @@ def pull(data_dir: Path, releases, log=print) -> dict:
             out["discover"] = True
     log(f"pulled: {out}")
     return out
+
+
+def fetch_bronze(releases, data_dir: Path, log=print) -> int:
+    # Each crawl bundle (weekly and older monthly data releases) is downloaded and unpacked once.
+    bronze, got = data_dir / "bronze", 0
+    for release in releases.list_releases():
+        if not release["tag_name"].startswith("crawl-") or release["tag_name"] == STATE_TAG:
+            continue
+        for asset in releases.assets(release):
+            name = asset["name"]
+            marker = bronze / "done" / name
+            if not (name.startswith("crawl-") and name.endswith(".tar")) or marker.exists():
+                continue
+            tar = bronze / "tars" / name
+            releases.download_asset(asset, tar)
+            safe_extract(tar, bronze)
+            tar.unlink()
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+            got += 1
+    log(f"bronze: {got} new bundles")
+    return got

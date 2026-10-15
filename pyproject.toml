@@ -12,6 +12,8 @@ dependencies = ["httpx>=0.27", "orjson>=3.10", "pyarrow>=17", "tzdata>=2024.1; s
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Only the private signals build needs DuckDB; the crawler and end users do not.
+pipeline = ["duckdb>=1.1", "pytz"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mergescout"]
