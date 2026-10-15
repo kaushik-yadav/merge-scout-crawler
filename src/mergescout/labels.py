@@ -12,6 +12,8 @@ def norm_label(name: str) -> str:
 
 
 HOT = {norm_label(label) for label in OPPORTUNITY_LABELS}
+# "help wanted" invites anyone; these labels promise a task sized for a first contribution.
+BEGINNER = HOT - {"help wanted"}
 
 
 def has_opportunity(labels: list[str]) -> bool:
