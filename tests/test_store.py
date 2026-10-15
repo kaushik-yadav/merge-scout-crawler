@@ -88,3 +88,10 @@ def test_safe_extract_refuses_paths_outside_the_folder(tmp_path):
     with pytest.raises(ValueError):
         safe_extract(bad, tmp_path / "out")
     assert not (tmp_path / "escape.txt").exists()
+
+
+def test_an_empty_state_is_never_backed_up(tmp_path):
+    CrawlState(tmp_path / "crawl.sqlite")
+    rel = MemReleases()
+    out = push(tmp_path, rel, NOW, **QUIET)
+    assert out["state"] is False and ("crawl-state", "crawl.sqlite.gz") not in rel.files

@@ -11,6 +11,10 @@ on:
         description: "Start a fresh sweep of active repos"
         type: boolean
         default: false
+      bootstrap:
+        description: "First setup only: allow starting without any saved crawl state"
+        type: boolean
+        default: false
 
 concurrency:
   group: crawl-state
@@ -56,6 +60,14 @@ jobs:
       - name: Restore state from the releases if the cache is gone
         if: steps.guard.outputs.skip != 'true' && steps.cache.outputs.cache-matched-key == ''
         run: python -m mergescout.store pull
+      - name: Make sure the crawl state is here (stops before anything can be overwritten)
+        id: state
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          if [ ! -s data/crawl.sqlite ] && [ "${{ inputs.bootstrap }}" != "true" ]; then
+            echo "No crawl state in the cache or the releases; stopping so the good backup is never replaced."
+            exit 1
+          fi
       - name: Start a fresh sweep on the 1st of the month, or when asked
         if: steps.guard.outputs.skip != 'true'
         run: |
@@ -67,6 +79,7 @@ jobs:
       - name: Get a token for the MergeScout GitHub App (skipped until the App is set up)
         id: app
         if: steps.guard.outputs.skip != 'true' && vars.MS_APP_ID != ''
+        continue-on-error: true
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ vars.MS_APP_ID }}
@@ -75,7 +88,7 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         timeout-minutes: 75
         continue-on-error: true
-        run: python -m mergescout.discover sweep --min-stars 100 --active-days 90 --workers 8 --max-wait 120
+        run: python -m mergescout.discover sweep --min-stars 100 --active-days 90 --workers 4 --max-wait 600
         env:
           GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
           # Extra identities with their own limits: the App (when set up) and this workflow's own token.
@@ -88,10 +101,10 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         run: date -u +%F > data/last-discover
       - name: Back up state and sweep results to releases
-        if: always() && steps.guard.outputs.skip != 'true'
+        if: always() && steps.guard.outputs.skip != 'true' && steps.state.outcome == 'success'
         run: python -m mergescout.store push --with-discover
       - name: Save state to the cache
-        if: always() && steps.guard.outputs.skip != 'true'
+        if: always() && steps.guard.outputs.skip != 'true' && steps.state.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: data

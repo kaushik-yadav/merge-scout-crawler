@@ -29,10 +29,27 @@ def changed_since(repo: dict, now: datetime, full_every_days: int) -> datetime |
 class _Lane:
     # One identity's share of the run: its own parallel slots, points left and reason for stepping aside.
     def __init__(self, identity: Identity, in_flight: int):
-        self.name, self.make_gql, self.slots = identity.name, identity.make_gql, slots(in_flight, identity.share)
+        self.name, self.make_gql, self.gate = identity.name, identity.make_gql, identity.gate
+        self.max_slots = slots(in_flight, identity.share)
+        self.slots = self.lowest = self.max_slots
         self.busy, self.repos, self.points = 0, 0, 0
         self.remaining: int | None = None
         self.out: str | None = None
+        self.seen_waits, self.calm = 0, 0
+
+    def pace(self, log) -> None:
+        # Halve parallel requests when GitHub asked this identity to slow down; add one back after 20 calm repos.
+        waits = self.gate.stats["rate_waits"]
+        if waits > self.seen_waits:
+            self.seen_waits, self.calm = waits, 0
+            if self.slots > 1:
+                self.slots = max(1, self.slots // 2)
+                self.lowest = min(self.lowest, self.slots)
+                log(f"{self.name}: GitHub asked to slow down; parallel requests now {self.slots}")
+        else:
+            self.calm += 1
+            if self.calm >= 20 and self.slots < self.max_slots:
+                self.slots, self.calm = self.slots + 1, 0
 
 
 def run_crawl(state: CrawlState, make_gql, data_dir: Path, run_id: str, *, minutes: float, in_flight: int = 12,
@@ -74,7 +91,7 @@ def run_crawl(state: CrawlState, make_gql, data_dir: Path, run_id: str, *, minut
             state.done(repo_id, run_id, points, prs, issues, refresh_days=days, full=full)
         pending.clear()
 
-    with ThreadPoolExecutor(max_workers=sum(lane.slots for lane in lanes)) as pool:
+    with ThreadPoolExecutor(max_workers=sum(lane.max_slots for lane in lanes)) as pool:
         futures: dict = {}
         while True:
             if stop is None:
@@ -105,6 +122,7 @@ def run_crawl(state: CrawlState, make_gql, data_dir: Path, run_id: str, *, minut
                 lane = futures.pop(f)
                 lane.busy -= 1
                 repo, bundle, exc, left = f.result()
+                lane.pace(log)
                 if left is not None:
                     lane.remaining = left
                     if left < reserve and lane.out is None:
@@ -147,10 +165,10 @@ def run_crawl(state: CrawlState, make_gql, data_dir: Path, run_id: str, *, minut
     reason = stop or "empty"
     state.finish_run(run_id, stats["points"], stats["repos"], reason)
     per = {lane.name: {"repos": lane.repos, "points": lane.points, "left": lane.remaining, "out": lane.out,
-                       "slots": lane.slots} for lane in lanes}
+                       "slots": lane.slots, "lowest_slots": lane.lowest} for lane in lanes}
     log(f"run {run_id}: repos={stats['repos']} points={stats['points']} failed={stats['failed']} "
         f"gone={stats['gone']} reason={reason} queue={state.counts()}")
     for name, s in per.items():
         log(f"  {name}: repos={s['repos']} points={s['points']} left={s['left']} slots={s['slots']} "
-            f"stopped={s['out'] or 'no'}")
+            f"(lowest {s['lowest_slots']}) stopped={s['out'] or 'no'}")
     return {**stats, "reason": reason, "identities": per}

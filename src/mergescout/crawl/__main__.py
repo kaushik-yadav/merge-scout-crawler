@@ -2,6 +2,7 @@ import argparse
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 
 from mergescout.config import load_config
@@ -22,7 +23,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--reserve", type=int, default=300, help="Stop when fewer points than this are left")
     run.add_argument("--hot-days", type=int, default=1, help="Refresh repos with beginner issues after this many days")
     run.add_argument("--cold-days", type=int, default=7, help="Refresh other repos after this many days")
-    run.add_argument("--max-wait", type=float, default=120, help="Stop instead of waiting longer for the rate limit")
+    run.add_argument("--max-wait", type=float, default=120,
+                     help="Longest wait for GitHub's rate limit; also capped by the time left in the run")
+    run.add_argument("--grace", type=float, default=8,
+                     help="Minutes after --minutes that running work may still spend sitting out a wait")
     run.add_argument("--full-every-days", type=int, default=30, help="Redo a full crawl this often; refreshes in between")
     sub.add_parser("status", help="Show the queue and the last runs")
     seed = sub.add_parser("seed", help="Queue active repos from the sweep, beginner-friendly repos first")
@@ -63,8 +67,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     run_id = os.environ.get("MS_RUN_ID") or now.strftime("%Y%m%dT%H%M%SZ")
     print(f"requeued stale={state.requeue_stale(120)} failed={state.requeue_failed(3)}", flush=True)
+    # Any wait GitHub asks for is sat out if it still fits in this run; otherwise that identity steps aside.
+    end = time.monotonic() + (args.minutes + args.grace) * 60
+
+    def allowed_wait() -> float:
+        return max(0.0, min(args.max_wait, end - time.monotonic()))
     # Personal token plus, when set, the GitHub App and workflow tokens: each with its own limits and wait.
-    identities = identities_from_env(token, args.max_wait, client=GitHubGraphQL)
+    identities = identities_from_env(token, allowed_wait, client=GitHubGraphQL)
     out = run_crawl(state, identities, cfg.data_dir, run_id,
                     minutes=args.minutes, in_flight=args.in_flight, reserve=args.reserve, limit=args.limit,
                     hot_days=args.hot_days, cold_days=args.cold_days, full_every_days=args.full_every_days,

@@ -8,7 +8,7 @@ on:
     inputs:
       minutes:
         description: "Crawl minutes (the run also stops when the hour's points run out)"
-        default: "50"
+        default: "40"
 
 concurrency:
   group: crawl-state
@@ -46,9 +46,18 @@ jobs:
       - name: Restore state from the releases if the cache is gone
         if: steps.cache.outputs.cache-matched-key == ''
         run: python -m mergescout.store pull
+      - name: Make sure the crawl state is here (stops before anything can be overwritten)
+        id: state
+        run: |
+          if [ ! -s data/crawl.sqlite ]; then
+            echo "No crawl state in the cache or the releases; stopping so the good backup is never replaced."
+            exit 1
+          fi
       - name: Get a token for the MergeScout GitHub App (skipped until the App is set up)
         id: app
         if: vars.MS_APP_ID != ''
+        # A hiccup here must not cost the hour: the crawl then runs with the other identities.
+        continue-on-error: true
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ vars.MS_APP_ID }}
@@ -56,17 +65,19 @@ jobs:
       - name: Crawl
         # Leaves time to upload and save even if the process hangs on exit.
         timeout-minutes: 52
-        run: python -m mergescout.crawl run --minutes "${{ inputs.minutes || '50' }}"
+        # 12 requests per identity (36 from one runner) drew a 5-minute penalty from GitHub, so 6 each; long waits
+        # are sat out (minutes are free in a public repo), and 40 minutes leaves room for one before the hour ends.
+        run: python -m mergescout.crawl run --minutes "${{ inputs.minutes || '40' }}" --in-flight 6 --max-wait 900
         env:
           GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
           # Extra identities with their own limits: the App (when set up) and this workflow's own token.
           MS_APP_TOKEN: ${{ steps.app.outputs.token }}
           MS_ACTIONS_TOKEN: ${{ github.token }}
       - name: Upload new data and a state backup to releases
-        if: always()
+        if: always() && steps.state.outcome == 'success'
         run: python -m mergescout.store push
       - name: Save state to the cache
-        if: always()
+        if: always() && steps.state.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: data

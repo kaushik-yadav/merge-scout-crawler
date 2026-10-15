@@ -52,6 +52,16 @@ def safe_extract(archive: Path, dest: Path) -> None:
                 shutil.copyfileobj(src, out)
 
 
+def _repo_count(state_file: Path) -> int:
+    db = sqlite3.connect(state_file)
+    try:
+        return db.execute("SELECT count(*) FROM repos").fetchone()[0]
+    except sqlite3.Error:
+        return 0
+    finally:
+        db.close()
+
+
 def push(data_dir: Path, releases, now: datetime, with_discover: bool = False, log=print) -> dict:
     # Upload first, delete after: a failed upload leaves the files for the next run to retry.
     outbox = data_dir / "outbox"
@@ -65,7 +75,10 @@ def push(data_dir: Path, releases, now: datetime, with_discover: bool = False, l
         bundle.unlink()
         out["runs"] += 1
     state_file = data_dir / "crawl.sqlite"
-    if state_file.exists():
+    if state_file.exists() and _repo_count(state_file) == 0:
+        # An empty queue means the state was not restored; never let it replace the good backup.
+        log("not backing up an empty crawl state")
+    elif state_file.exists():
         snap, packed = outbox / "crawl.sqlite", outbox / "crawl.sqlite.gz"
         src, dst = sqlite3.connect(state_file), sqlite3.connect(snap)
         with dst:

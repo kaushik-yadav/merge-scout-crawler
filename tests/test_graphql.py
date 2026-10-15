@@ -265,3 +265,14 @@ def test_a_request_that_cannot_be_sent_is_not_retried():
     with pytest.raises(GraphQLError, match="line breaks"):
         gql.query("q")
     assert sleeps == []
+
+
+def test_wait_limit_can_follow_the_time_left_in_the_run():
+    from mergescout.github.graphql import RateLimited
+    limited = httpx.Response(403, headers={"retry-after": "300"}, json={"message": "secondary rate limit"})
+    gql, sleeps = make([limited, httpx.Response(200, json=OK)], max_wait=lambda: 600)
+    assert gql.query("q").cost == 3 and sleeps == [300]
+    gql, sleeps = make([limited], max_wait=lambda: 200)
+    with pytest.raises(RateLimited, match="allowed 200 s"):
+        gql.query("q")
+    assert sleeps == []

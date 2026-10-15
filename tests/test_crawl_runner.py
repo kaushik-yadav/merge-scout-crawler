@@ -228,3 +228,28 @@ def test_the_run_stops_when_every_identity_is_out(tmp_path):
                         ident("b", lambda: GQL(budget(), rejected=True))], tmp_path, "r1", minutes=5, in_flight=1,
                     **QUIET)
     assert out["reason"] == "rate_limit" and s.counts() == {"queued": 3}
+
+
+class SlowDown(GQL):
+    # Pretends GitHub asked this identity to slow down on its first few queries.
+    def __init__(self, budget, gate, times):
+        super().__init__(budget)
+        self.gate, self.times = gate, times
+
+    def query(self, query, variables=None, **kw):
+        with self.budget["lock"]:
+            if self.budget.setdefault("asked", 0) < self.times:
+                self.budget["asked"] += 1
+                self.gate.note("rate_waits")
+        return super().query(query, variables, **kw)
+
+
+def test_parallel_requests_drop_when_github_asks_to_slow_down_and_grow_back(tmp_path):
+    s = seed(tmp_path, 60)
+    gate, b = Gate(), budget()
+    logs = []
+    out = run_crawl(s, [Identity("personal", lambda: SlowDown(b, gate, 2), gate)], tmp_path, "r1", minutes=5,
+                    in_flight=8, now=lambda: NOW, log=logs.append)
+    per = out["identities"]["personal"]
+    assert out["repos"] == 60 and per["lowest_slots"] < 8 and per["slots"] > per["lowest_slots"]
+    assert any("slow down" in line for line in logs)

@@ -74,7 +74,8 @@ class GitHubGraphQL:
 
     def __init__(self, token: str, *, client: httpx.Client | None = None, max_retries: int = 5,
                  reserve: int = 200, sleep: Callable[[float], None] = time.sleep,
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), max_wait: float | None = None,
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 max_wait: float | Callable[[], float] | None = None,
                  timeout_retries: int = 1, gate: Gate | None = None):
         self.client = client or httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0))
         # Tokens pasted into settings often carry a stray space or line break.
@@ -155,7 +156,8 @@ class GitHubGraphQL:
             self.last_remaining = result.remaining
             if result.remaining < self.reserve:
                 wait = self._seconds_until(result.reset_at, fallback=0)
-                if self.max_wait is None or wait <= self.max_wait:
+                limit = self._wait_limit()
+                if limit is None or wait <= limit:
                     self.gate.hold(wait)
                     self.sleep(wait)
             return result
@@ -180,9 +182,14 @@ class GitHubGraphQL:
             return 60
         return min(60, 2 ** attempt * 2)
 
+    def _wait_limit(self) -> float | None:
+        # max_wait may be a function, so a crawl can sit out any wait that still fits in its time window.
+        return self.max_wait() if callable(self.max_wait) else self.max_wait
+
     def _pause(self, seconds: float) -> None:
-        if self.max_wait is not None and seconds > self.max_wait:
-            raise RateLimited(f"GitHub asks to wait {int(seconds)} s for the rate limit (limit {int(self.max_wait)} s)")
+        limit = self._wait_limit()
+        if limit is not None and seconds > limit:
+            raise RateLimited(f"GitHub asks to wait {int(seconds)} s for the rate limit (allowed {int(limit)} s)")
         self.gate.note("waited_s", seconds)
         self.sleep(seconds)
 

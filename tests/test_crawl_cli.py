@@ -48,7 +48,7 @@ def test_seed_then_run_end_to_end(monkeypatch, tmp_path, capsys):
     made = []
     monkeypatch.setattr(cli, "GitHubGraphQL", lambda token, **kw: made.append(kw) or GQL(b))
     assert main(["run", "--minutes", "1", "--in-flight", "2"]) == 0
-    assert made and made[0]["max_wait"] == 120
+    assert made and callable(made[0]["max_wait"]) and 100 < made[0]["max_wait"]() <= 120
     assert all(kw["gate"] is made[0]["gate"] for kw in made) and made[0]["gate"] is not None
     assert pq.read_table(tmp_path / "crawl" / "prs" / "run=42-1-000.parquet").num_rows == 2
     assert main(["status"]) == 0
