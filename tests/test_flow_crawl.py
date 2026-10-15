@@ -10,6 +10,7 @@ import pytest
 from mergescout.crawl import __main__ as cli
 from mergescout.crawl import writer as writer_mod
 from mergescout.crawl.__main__ import main
+from mergescout.crawl.chain import next_step, write_last_run
 from mergescout.crawl.fetch import fetch_repo
 from mergescout.crawl.runner import run_crawl
 from mergescout.crawl.state import CrawlState
@@ -335,3 +336,37 @@ def test_closed_history_asks_for_the_repo_s_own_label_spellings(fake_gql):
     closed = [v for q, v in gql.calls if "states: CLOSED" in q]
     assert closed and closed[0]["labels"] == ["good first issue :wave:"]
 
+
+TODAY = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
+
+
+# Relay: each run decides what runs next, so crawling no longer waits for GitHub's unreliable hourly schedule.
+def relay(tmp_path, discovered="2026-10-16", repos=50, reason="time", queued=10):
+    state = CrawlState(tmp_path / "crawl.sqlite", now=lambda: TODAY)
+    state.upsert_repos([{"repo_id": i, "name": f"o/r{i}", "priority": 1} for i in range(queued)])
+    if discovered:
+        (tmp_path / "last-discover").write_text(discovered + "\n")
+    write_last_run(tmp_path, {"repos": repos, "reason": reason, "points": 100, "failed": 0})
+    return next_step(state, tmp_path, TODAY)
+
+
+def test_relay_picks_the_next_workflow(tmp_path):
+    assert relay(tmp_path / "a", discovered=None) == "discover"
+    assert relay(tmp_path / "b", discovered="2026-10-15") == "discover"
+    assert relay(tmp_path / "c") == "crawl"
+    assert relay(tmp_path / "d", reason="budget") == "crawl-later"
+    assert relay(tmp_path / "e", repos=0) == "none"
+    assert relay(tmp_path / "f", queued=0) == "none"
+    # Discover just refilled the queue: crawl even if the last crawl run found nothing to do.
+    state = CrawlState(tmp_path / "e" / "crawl.sqlite", now=lambda: TODAY)
+    assert next_step(state, tmp_path / "e", TODAY, after_discover=True) == "crawl"
+
+
+def test_due_count_includes_queued_due_and_outdated_repos(tmp_path):
+    s = CrawlState(tmp_path / "c.sqlite", now=lambda: TODAY)
+    s.upsert_repos([{"repo_id": i, "name": f"o/r{i}"} for i in range(3)])
+    assert s.due_count() == 3
+    s.claim(3, "r1")
+    for i in range(3):
+        s.done(i, "r1", 5, 1, 1, refresh_days=7)
+    assert s.due_count() == 0

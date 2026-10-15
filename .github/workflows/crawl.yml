@@ -2,8 +2,9 @@ name: Crawl
 
 on:
   schedule:
-    # Every hour: each run spends that hour's GitHub points, then the next run continues the queue.
-    - cron: "7 * * * *"
+    # Backup only: GitHub's schedule is best effort (it skipped most hours here), so each run starts the next one.
+    # Minute 37 avoids the busy top of the hour, when GitHub drops the most scheduled runs.
+    - cron: "37 * * * *"
   workflow_dispatch:
     inputs:
       minutes:
@@ -16,11 +17,13 @@ concurrency:
 
 permissions:
   contents: read
+  # Lets a finished run start the next one (the relay).
+  actions: write
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 58
+    timeout-minutes: 70
     env:
       MS_DATA_DIR: ${{ github.workspace }}/data
       MS_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -82,3 +85,14 @@ jobs:
         with:
           path: data
           key: crawl-state-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Start the next run (the relay; set the repository variable MS_CHAIN to "off" to stop it)
+        if: success() && vars.MS_CHAIN != 'off'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          next=$(python -m mergescout.crawl next)
+          echo "next: $next"
+          # A run that stopped on GitHub's limits pauses before handing over, so the next one finds points again.
+          if [ "$next" = "crawl-later" ]; then sleep 600; next=crawl; fi
+          if [ "$next" != "none" ]; then gh workflow run "$next.yml" --ref "${{ github.ref_name }}"; fi

@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "Find open-source issues you can actually get merged, with evidence."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["httpx>=0.27", "mcp>=2.3,<3", "zstandard>=0.23", "tzdata>=2024.1; sys_platform == 'win32'"]
+dependencies = ["httpx>=0.27", "tzdata>=2024.1; sys_platform == 'win32'"]
 
 [project.optional-dependencies]
 # The crawler and the daily pipeline need these; the user tool never does.
@@ -16,8 +16,6 @@ crawl = ["orjson>=3.10", "pyarrow>=17"]
 pipeline = ["orjson>=3.10", "pyarrow>=17", "duckdb>=1.1", "pytz"]
 dev = ["pytest>=8", "orjson>=3.10", "pyarrow>=17", "duckdb>=1.1", "pytz"]
 
-[project.scripts]
-mergescout = "mergescout.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mergescout"]

@@ -57,17 +57,23 @@ class Releases:
     def upload(self, tag: str, path: Path, name: str | None = None) -> dict:
         release = self.ensure(tag)
         name = name or path.name
-        # GitHub refuses a second asset with the same name, so an older copy is removed first.
-        for asset in self.assets(release):
-            if asset["name"] == name:
-                self._check(self.client.delete(f"{API}/repos/{self.repo}/releases/assets/{asset['id']}",
-                                               headers=self.headers), f"replacing {name}")
+        existing = {a["name"]: a for a in self.assets(release)}
+        # A file being replaced is uploaded under a temporary name first, so a failed upload keeps the old copy.
+        target = f"{name}.new" if name in existing else name
+        if target in existing:
+            self.delete_asset(existing[target])
         headers = {**self.headers, "Content-Type": "application/octet-stream",
                    "Content-Length": str(path.stat().st_size)}
         with path.open("rb") as f:
             resp = self.client.post(f"{UPLOADS}/repos/{self.repo}/releases/{release['id']}/assets",
-                                    params={"name": name}, headers=headers, content=f)
-        return self._check(resp, f"uploading {name}").json()
+                                    params={"name": target}, headers=headers, content=f)
+        uploaded = self._check(resp, f"uploading {name}").json()
+        if target == name:
+            return uploaded
+        self.delete_asset(existing[name])
+        resp = self.client.patch(f"{API}/repos/{self.repo}/releases/assets/{uploaded['id']}", headers=self.headers,
+                                 json={"name": name})
+        return self._check(resp, f"renaming {target}").json()
 
     def list_releases(self) -> list[dict]:
         out, page = [], 1

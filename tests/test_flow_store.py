@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from mergescout.crawl.state import CrawlState
-from mergescout.github.releases import Releases
+from mergescout.github.releases import ReleaseError, Releases
 from mergescout.setup_check import check_store
 from mergescout.store import __main__ as cli
 from mergescout.store.sync import pull, push, safe_extract
@@ -137,17 +137,30 @@ def fake(routes):
 
 
 def test_upload_replaces_an_asset_with_the_same_name(tmp_path):
+    # The new copy goes up under a temporary name first, so a failed upload never loses the old file.
     f = tmp_path / "crawl.sqlite.gz"
     f.write_bytes(b"x" * 10)
     rel, seen = fake([("GET", "/releases/tags/crawl-state", httpx.Response(200, json=REL)),
                       ("GET", "/releases/7/assets", httpx.Response(200, json=[{"id": 3, "name": "crawl.sqlite.gz"}])),
+                      ("POST", "uploads.github.com", httpx.Response(201, json={"id": 4, "name": "crawl.sqlite.gz.new"})),
                       ("DELETE", "/releases/assets/3", httpx.Response(204)),
-                      ("POST", "uploads.github.com", httpx.Response(201, json={"id": 4, "name": "crawl.sqlite.gz"}))])
-    assert rel.upload("crawl-state", f)["id"] == 4
-    up = seen[-1]
-    assert up.url.host == "uploads.github.com" and up.url.params["name"] == "crawl.sqlite.gz"
+                      ("PATCH", "/releases/assets/4", httpx.Response(200, json={"id": 4, "name": "crawl.sqlite.gz"}))])
+    assert rel.upload("crawl-state", f)["name"] == "crawl.sqlite.gz"
+    up = next(r for r in seen if r.method == "POST")
+    assert up.url.host == "uploads.github.com" and up.url.params["name"] == "crawl.sqlite.gz.new"
     assert up.headers["content-type"] == "application/octet-stream" and up.headers["content-length"] == "10"
-    assert [r.method for r in seen].count("DELETE") == 1
+    assert [r.method for r in seen][-3:] == ["POST", "DELETE", "PATCH"]
+
+
+def test_a_failed_upload_keeps_the_old_file(tmp_path):
+    f = tmp_path / "crawl.sqlite.gz"
+    f.write_bytes(b"x")
+    rel, seen = fake([("GET", "/releases/tags/crawl-state", httpx.Response(200, json=REL)),
+                      ("GET", "/releases/7/assets", httpx.Response(200, json=[{"id": 3, "name": "crawl.sqlite.gz"}])),
+                      ("POST", "uploads.github.com", httpx.Response(502, text="bad gateway"))])
+    with pytest.raises(ReleaseError):
+        rel.upload("crawl-state", f)
+    assert "DELETE" not in [r.method for r in seen]
 
 
 def test_list_releases_pages_through_everything():

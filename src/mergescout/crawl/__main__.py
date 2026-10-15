@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from mergescout.config import load_config
+from mergescout.crawl.chain import next_step, write_last_run
 from mergescout.crawl.runner import run_crawl
 from mergescout.crawl.seed import seed_queue
 from mergescout.crawl.state import CrawlState
@@ -35,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("requeue-failed", help="Give failed repos another try (up to 3 attempts)")
     bk = sub.add_parser("backup", help="Copy the state file safely, even while it is in use")
     bk.add_argument("dest")
+    nx = sub.add_parser("next", help="Print which workflow the relay starts next: discover, crawl, crawl-later or none")
+    nx.add_argument("--after-discover", action="store_true")
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -53,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         with dest:
             state.db.backup(dest)
         dest.close()
+        return 0
+    if args.cmd == "next":
+        print(next_step(state, cfg.data_dir, now, after_discover=args.after_discover))
         return 0
     if args.cmd == "requeue-failed":
         print(f"requeued {state.requeue_failed(3)}")
@@ -80,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
                     log=lambda msg: print(msg, flush=True))
     for i in identities:
         print(f"github {i.name}: {i.gate.summary()}", flush=True)
+    write_last_run(cfg.data_dir, out)
     return 1 if out["repos"] == 0 and out["failed"] else 0
 
 

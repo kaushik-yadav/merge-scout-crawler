@@ -121,6 +121,14 @@ class CrawlState:
             self.db.execute("UPDATE runs SET finished_at = ?, points = ?, repos = ?, reason = ? WHERE run_id = ?",
                             (self._ts(), points, repos, reason, run_id))
 
+    def due_count(self) -> int:
+        # Same rule as claim(): queued, due for a refresh, or crawled by an older crawler.
+        with self.lock:
+            return self.db.execute(
+                "SELECT COUNT(*) FROM repos WHERE status = 'queued' OR (status = 'done' AND "
+                "((next_due IS NOT NULL AND next_due <= ?) OR crawl_version < ?))",
+                (self._ts(), CRAWL_VERSION)).fetchone()[0]
+
     def counts(self) -> dict:
         with self.lock:
             return dict(self.db.execute("SELECT status, COUNT(*) FROM repos GROUP BY status").fetchall())

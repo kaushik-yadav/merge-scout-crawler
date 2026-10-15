@@ -22,6 +22,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Lets discovery hand over to the crawl when it finishes (the relay).
+  actions: write
 
 jobs:
   discover:
@@ -109,3 +111,12 @@ jobs:
         with:
           path: data
           key: crawl-state-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Hand over to the crawl (the relay; set the repository variable MS_CHAIN to "off" to stop it)
+        if: success() && steps.guard.outputs.skip != 'true' && vars.MS_CHAIN != 'off'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          next=$(python -m mergescout.crawl next --after-discover)
+          echo "next: $next"
+          if [ "$next" = "crawl" ]; then gh workflow run crawl.yml --ref "${{ github.ref_name }}"; fi
