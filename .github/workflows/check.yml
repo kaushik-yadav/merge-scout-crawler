@@ -1,0 +1,36 @@
+name: Check setup
+
+# Run by hand after changing secrets. It never crawls: it tests each token and the data store, and the
+# store test uploads one tiny file to the data release and deletes it again.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install .
+      - name: Get a token for the MergeScout GitHub App (fails here if MS_APP_ID or the key is wrong)
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.MS_APP_ID }}
+          private-key: ${{ secrets.MS_APP_PRIVATE_KEY }}
+      - name: Check every token and the data store
+        run: python -m mergescout.setup_check
+        env:
+          GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
+          MS_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MS_ACTIONS_TOKEN: ${{ github.token }}
+          MS_RELEASE_TOKEN: ${{ secrets.MS_STORE_TOKEN }}
+          MS_STORE_REPO: kaushik-yadav/merge-scout
