@@ -13,7 +13,7 @@ query($owner: String!, $name: String!, $cursor: String, $n: Int!, $order: IssueO
       nodes {{
         number createdAt updatedAt mergedAt closedAt state headRefName additions deletions changedFiles
         author {{ __typename login }} authorAssociation mergedBy {{ login }} bodyText
-        reviews(first: 1) {{ nodes {{ submittedAt authorAssociation author {{ login }} }} }}
+        reviews(first: 5) {{ nodes {{ submittedAt authorAssociation author {{ __typename login }} }} }}
         closingIssuesReferences(first: 5) {{ nodes {{ number }} }}
       }}
     }}
@@ -93,7 +93,10 @@ def parse_prs(repo_id: int, nodes: list) -> list[dict]:
         if not n:
             continue
         author = n.get("author") or {}
-        review = ((n.get("reviews") or {}).get("nodes") or [None])[0] or {}
+        reviews = [r for r in (n.get("reviews") or {}).get("nodes") or [] if r]
+        review = reviews[0] if reviews else {}
+        # Review bots often answer first; the first person's review is the real maintainer response.
+        human = next((r for r in reviews if (r.get("author") or {}).get("__typename") != "Bot"), {})
         row = {
             "repo_id": repo_id, "number": n.get("number"),
             "created_at": parse_time(n.get("createdAt")), "merged_at": parse_time(n.get("mergedAt")),
@@ -105,6 +108,9 @@ def parse_prs(repo_id: int, nodes: list) -> list[dict]:
             "first_review_at": parse_time(review.get("submittedAt")),
             "first_review_by": (review.get("author") or {}).get("login"),
             "first_review_association": review.get("authorAssociation"),
+            "first_human_review_at": parse_time(human.get("submittedAt")),
+            "first_human_review_by": (human.get("author") or {}).get("login"),
+            "first_human_review_association": human.get("authorAssociation"),
             "closing_issue_numbers": [c["number"] for c in (n.get("closingIssuesReferences") or {}).get("nodes") or []
                                       if c],
         }

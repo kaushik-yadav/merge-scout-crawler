@@ -124,3 +124,18 @@ def test_refreshed_closed_issue_carries_its_fix():
             {"number": 21, "state": "MERGED", "author": {"login": "b"}, "authorAssociation": "CONTRIBUTOR"}]}}])
     r = issues[0]
     assert (r["fix_pr"], r["fix_pr_state"], r["fix_author"], r["fix_association"]) == (21, "MERGED", "b", "CONTRIBUTOR")
+
+
+def test_first_human_review_skips_review_bots():
+    from mergescout.crawl.queries import PR_PAGE_QUERY
+    assert "reviews(first: 5) { nodes { submittedAt authorAssociation author { __typename login } } }" in " ".join(
+        PR_PAGE_QUERY.split())
+    rows = parse_prs(1, [{"number": 1, "state": "OPEN", "reviews": {"nodes": [
+        {"submittedAt": "2026-10-01T00:05:00Z", "authorAssociation": "NONE",
+         "author": {"__typename": "Bot", "login": "coderabbitai"}},
+        {"submittedAt": "2026-10-02T00:00:00Z", "authorAssociation": "MEMBER",
+         "author": {"__typename": "User", "login": "maint"}}]}}])
+    r = rows[0]
+    assert r["first_review_by"] == "coderabbitai"
+    assert (r["first_human_review_by"], r["first_human_review_association"]) == ("maint", "MEMBER")
+    assert r["first_human_review_at"].day == 2

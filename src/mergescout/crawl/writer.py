@@ -24,6 +24,8 @@ SCHEMAS = {
         ("author_association", pa.string()), ("merged_by", pa.string()), ("head_ref", pa.string()),
         ("additions", pa.int32()), ("deletions", pa.int32()), ("changed_files", pa.int32()),
         ("first_review_at", TS), ("first_review_by", pa.string()), ("first_review_association", pa.string()),
+        ("first_human_review_at", TS), ("first_human_review_by", pa.string()),
+        ("first_human_review_association", pa.string()),
         ("closing_issue_numbers", pa.list_(pa.int32())), ("ai_tag", pa.string()), ("run_id", pa.string()), ("fetched_at", TS)]),
     "issues": pa.schema([
         ("repo_id", pa.int64()), ("number", pa.int32()), ("title", pa.string()), ("body_excerpt", pa.string()),
