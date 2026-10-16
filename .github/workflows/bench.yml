@@ -44,8 +44,10 @@ jobs:
           private-key: ${{ secrets.MS_APP_PRIVATE_KEY }}
       - name: Read today's share of active repos' push CI and rebuild the benchmarks
         timeout-minutes: 110
-        run: python -m mergescout.bench ci --workers 8 --max-wait 3600 --limit "${{ inputs.limit || '0' }}"
+        # The input reaches the shell as a variable, never as code.
+        run: python -m mergescout.bench ci --workers 8 --max-wait 3600 --limit "${LIMIT:-0}"
         env:
+          LIMIT: ${{ inputs.limit }}
           # REST limits only: the crawl spends GraphQL points, a separate budget.
           GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
           MS_APP_TOKEN: ${{ steps.app.outputs.token }}

@@ -41,7 +41,8 @@ def repo_stats(runs: list[dict], since: datetime | None = None, page_full: bool 
            and r.get("created_at") and r.get("updated_at") and (since is None or (_t(r.get("created_at")) or since) >= since)]
     pushes = {}
     for r in own:
-        pushes.setdefault(r.get("head_sha") or r.get("id"), []).append(r)
+        # A tag pushed later on the same commit is its own push, not one push lasting days.
+        pushes.setdefault((r.get("head_sha") or r.get("id"), r.get("head_branch")), []).append(r)
     if page_full and pushes:
         # The page ends somewhere inside its oldest push, which may have more runs on the next page.
         pushes.pop(min(pushes, key=lambda k: min(r.get("created_at") or "" for r in pushes[k])))
@@ -151,7 +152,9 @@ def _one(pool: TokenPool, repo: dict, since: datetime) -> dict | None:
     resp = pool.get(f"/repos/{repo['name']}/actions/runs",
                     {"event": "push", "per_page": PAGE, "exclude_pull_requests": "true"})
     # 404: gone or renamed; 403: Actions turned off. Neither is a CI to compare.
-    if resp is None or resp.status_code >= 400:
+    if resp is None:
+        raise RuntimeError("GitHub gave no answer after retries")
+    if resp.status_code >= 400:
         return None
     runs = resp.json().get("workflow_runs") or []
     stats = repo_stats(runs, since, page_full=len(runs) >= PAGE)
@@ -166,7 +169,8 @@ def fetch_all(pool: TokenPool, repos: list[dict], now: datetime, days: int = 30,
         for i, fut in enumerate(futures):
             try:
                 rec = fut.result()
-            except OutOfBudget:
+            except Exception:
+                # One repo that can't be read (limits, a broken answer) never loses the rest of the day.
                 complete = False
                 continue
             if rec:

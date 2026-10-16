@@ -121,3 +121,34 @@ def test_daily_run_stores_todays_sample_and_rebuilds_benchmarks_from_recent_days
     agg = json.loads(rel.files[("bench-latest", "ci-benchmarks.json")])
     # 25 repos: 10 seen only last week, 15 re-read today (their newest numbers win); August is too old.
     assert agg["groups"]["Python|100-1k"]["repos"] == 25 and agg["groups"]["Python|100-1k"]["median_s"]["p50"] == 200
+
+
+# Review findings: tags pushed later on an old commit, broken answers and same-day re-runs.
+def test_a_tag_push_of_an_old_commit_is_its_own_push():
+    def r(k, branch, hours_ago, sha=None):
+        cr = NOW - timedelta(hours=hours_ago)
+        return {"id": k, "head_sha": sha or f"s{k}", "head_branch": branch, "path": "ci.yml", "conclusion": "success",
+                "run_attempt": 1, "status": "completed", "created_at": iso(cr), "run_started_at": iso(cr),
+                "updated_at": iso(cr + timedelta(seconds=300))}
+    runs = [r(k, "main", k + 1) for k in range(5)] + [r(99, "main", 80, "same"), r(100, "v1", 2, "same")]
+    s = repo_stats(runs)
+    assert s["pushes"] == 7 and s["p90_s"] == 300
+
+
+def test_one_broken_repo_answer_never_loses_the_days_sample():
+    def handler(request):
+        if "bad" in request.url.path:
+            return httpx.Response(200, content=b"not json")
+        return httpx.Response(200, json={"workflow_runs": [run(k, 300) for k in range(6)]}, headers={"x-ratelimit-remaining": "4000"})
+    pool = TokenPool(["tok"], client=httpx.Client(transport=httpx.MockTransport(handler)), reserve=100)
+    out = fetch_all(pool, [{"name": n, "language": "Go", "stars": 500} for n in ("o/bad", "o/ok")], NOW, workers=1)
+    assert out["complete"] is False and [r["repo"] for r in out["records"]] == ["o/ok"]
+
+
+def test_a_second_run_on_the_same_day_adds_to_that_days_file(tmp_path):
+    rec = lambda i: {"repo": f"o/p{i}", "language": "Go", "stars": 500, "median_s": 1, "p90_s": 1, "fail_share": 0,  # noqa: E731
+                     "first_try_share": 1, "rerun_share": 0, "pushes": 9, "day": "2026-10-16"}
+    rel = FakeReleases()
+    publish(tmp_path / "a", rel, [rec(i) for i in range(30)], NOW, log=lambda m: None)
+    publish(tmp_path / "b", rel, [rec(99)], NOW, log=lambda m: None)
+    assert len(gzip.decompress(rel.files[("bench-2026-W42", "ci-2026-10-16.ndjson.gz")]).decode().splitlines()) == 31

@@ -47,6 +47,15 @@ def publish(data_dir: Path, releases, records: list[dict], now: datetime, days: 
     folder.mkdir(parents=True, exist_ok=True)
     name = f"ci-{now:%Y-%m-%d}.ndjson.gz"
     today = folder / name
+    # A second run on the same day adds to that day's file instead of replacing it.
+    release = releases.get(week_tag(now))
+    earlier = next((a for a in releases.assets(release) if a["name"] == name), None) if release else None
+    merged = {}
+    if earlier:
+        releases.download_asset(earlier, today)
+        merged = {r["repo"].lower(): r for r in _read(today)}
+    merged.update({r["repo"].lower(): r for r in records})
+    records = list(merged.values())
     with gzip.open(today, "wt", encoding="utf-8") as f:
         f.writelines(json.dumps(r) + "\n" for r in records)
     releases.upload(week_tag(now), today)
