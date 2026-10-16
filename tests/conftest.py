@@ -4,6 +4,9 @@ import os
 import orjson
 import pytest
 
+# Tests create many throwaway git repos; a system-wide core.fsmonitor would leave a watcher process for each.
+os.environ.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false"})
+
 
 def pytest_collection_modifyitems(config, items):
     # Network tests only run when asked, so the normal suite stays offline.

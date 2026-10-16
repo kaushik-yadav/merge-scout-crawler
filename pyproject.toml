@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mergescout"
 version = "0.0.1"
-description = "Find open-source issues you can actually get merged, with evidence."
+description = "MergeScout crawler: reads public GitHub repos into Parquet."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["httpx>=0.27", "tzdata>=2024.1; sys_platform == 'win32'"]

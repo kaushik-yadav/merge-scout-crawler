@@ -1,0 +1,52 @@
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: "11 6 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Read at most this many repos (0: all of today's share)"
+        default: "0"
+
+# Its own group: it reads only the sweep results, never the crawl state, so it can run beside the crawl.
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MS_DATA_DIR: ${{ github.workspace }}/data
+      # The sweep results are read from, and the samples kept in, the project repo's releases.
+      MS_RELEASE_TOKEN: ${{ secrets.MS_STORE_TOKEN }}
+      MS_STORE_REPO: kaushik-yadav/merge-scout
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install ".[crawl]"
+      - name: Get a token for the MergeScout GitHub App (skipped until the App is set up)
+        id: app
+        if: vars.MS_APP_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.MS_APP_ID }}
+          private-key: ${{ secrets.MS_APP_PRIVATE_KEY }}
+      - name: Read today's share of active repos' push CI and rebuild the benchmarks
+        timeout-minutes: 110
+        run: python -m mergescout.bench ci --workers 8 --max-wait 3600 --limit "${{ inputs.limit || '0' }}"
+        env:
+          # REST limits only: the crawl spends GraphQL points, a separate budget.
+          GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
+          MS_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MS_ACTIONS_TOKEN: ${{ github.token }}
