@@ -96,9 +96,15 @@ jobs:
           # Extra identities with their own limits: the App (when set up) and this workflow's own token.
           MS_APP_TOKEN: ${{ steps.app.outputs.token }}
           MS_ACTIONS_TOKEN: ${{ github.token }}
-      - name: Queue active repos, beginner-friendly ones first
+      # Repos on the store's watch list are queued first so their history stays current; without it, nothing changes.
+      - name: Fetch the watch list
         if: steps.guard.outputs.skip != 'true'
-        run: python -m mergescout.crawl seed
+        env:
+          GH_TOKEN: ${{ secrets.MS_STORE_TOKEN }}
+        run: gh release download bench-latest -R "$MS_STORE_REPO" -p watch-repos.txt -D data --clobber || echo "no watch list"
+      - name: Queue watched repos first, then active repos, beginner-friendly ones first
+        if: steps.guard.outputs.skip != 'true'
+        run: python -m mergescout.crawl seed --watch data/watch-repos.txt
       - name: Remember that today's discovery happened
         if: steps.guard.outputs.skip != 'true'
         run: date -u +%F > data/last-discover
