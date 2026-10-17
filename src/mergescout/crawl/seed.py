@@ -44,14 +44,34 @@ def priority(repo: dict) -> int:
     return round(1000 * value / expected_cost(repo))
 
 
+# Watched repos (a list of owner/name lines) are crawled before everything else, so their history stays current.
+WATCHED = 1_000_000
+
+
+def read_watch(path: Path | None) -> set[str]:
+    if not path or not Path(path).exists():
+        return set()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    return {x.strip().lower() for x in lines if x.strip() and not x.strip().startswith("#")}
+
+
+def apply_watch(rows: list[dict], watch: set[str]) -> int:
+    hits = 0
+    for r in rows:
+        if r["name"].lower() in watch:
+            r["priority"], hits = WATCHED, hits + 1
+    return hits
+
+
 def seed_queue(state: CrawlState, data_dir: Path, now: datetime, min_stars: int = 100, active_days: int = 90,
-               log=print) -> dict:
+               log=print, watch: set[str] | None = None) -> dict:
     active = active_repos_from_sweep(data_dir, min_stars, active_days, now)
     rows = [{"repo_id": r["repo_id"], "name": r["name"], "stars": r["stars"],
              "pushed_at": r["pushed_at"].isoformat() if r["pushed_at"] else None, "priority": priority(r)}
             for r in active]
+    watched = apply_watch(rows, watch or set())
     added = state.upsert_repos(rows)
     out = {"active": len(active), "opportunity_repos": sum(1 for r in active if r.get("opportunity_issues")),
-           "added": added}
+           "added": added, "watched": watched}
     log(f"seed: {out}")
     return out

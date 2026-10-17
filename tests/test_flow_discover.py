@@ -148,6 +148,6 @@ def test_seed_queue_puts_opportunity_repos_first(tmp_path):
     write_basics(tmp_path, [repo(1, "o/plain", 5000), repo(2, "o/friendly", 120, opp=3)])
     s = CrawlState(tmp_path / "c.sqlite", now=lambda: NOW)
     out = seed_queue(s, tmp_path, NOW, log=lambda *a: None)
-    assert out == {"active": 2, "opportunity_repos": 1, "added": 2}
+    assert out == {"active": 2, "opportunity_repos": 1, "added": 2, "watched": 0}
     assert [c["name"] for c in s.claim(2, "r1")] == ["o/friendly", "o/plain"]
     assert seed_queue(s, tmp_path, NOW, log=lambda *a: None)["added"] == 0

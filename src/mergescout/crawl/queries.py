@@ -13,7 +13,7 @@ query($owner: String!, $name: String!, $cursor: String, $n: Int!, $order: IssueO
     pullRequests(first: $n, after: $cursor, orderBy: {{field: $order, direction: DESC}}) {{
       pageInfo {{ hasNextPage endCursor }}
       nodes {{
-        number createdAt updatedAt mergedAt closedAt state headRefName additions deletions changedFiles
+        number title createdAt updatedAt mergedAt closedAt state headRefName additions deletions changedFiles
         author {{ __typename login }} authorAssociation mergedBy {{ login }} bodyText
         reviews(first: 5) {{ nodes {{ submittedAt authorAssociation author {{ __typename login }} }} }}
         closingIssuesReferences(first: 5) {{ nodes {{ number }} }}
@@ -44,6 +44,23 @@ query($owner: String!, $name: String!, $cursor: String, $n: Int!, $since: DateTi
   }}
 }}
 """
+
+
+# Dependency-update bots, by login or branch (self-hosted Renovate runs under many names).
+DEP_BOT = re.compile(r"^(dependabot|renovate)", re.I)
+# Titles are kept only where they carry a signal: bot bumps (package and versions) and human reverts or downgrades.
+REVERT_TITLE = re.compile(r"^\s*(revert|downgrade|roll ?back)\b", re.I)
+
+
+def is_dep_bot(login: str | None, head: str | None) -> bool:
+    return bool(DEP_BOT.match(login or "") or DEP_BOT.match(head or ""))
+
+
+def prs_by_number_query(numbers: list[int]) -> str:
+    # One query reads the last commit's check result and the commit count of up to 50 finished bot PRs (1 point).
+    parts = "\n".join(f"    pr{int(n)}: pullRequest(number: {int(n)}) {{ commits(last: 1) {{ totalCount "
+                      f"nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }} }}" for n in numbers)
+    return f"query($owner: String!, $name: String!) {{\n  {RL}\n  repository(owner: $owner, name: $name) {{\n{parts}\n  }}\n}}"
 
 
 def issues_by_number_query(numbers: list[int]) -> str:
@@ -122,8 +139,11 @@ def parse_prs(repo_id: int, nodes: list) -> list[dict]:
             "first_human_review_association": human.get("authorAssociation"),
             "closing_issue_numbers": [c["number"] for c in (n.get("closingIssuesReferences") or {}).get("nodes") or []
                                       if c],
+            "ci_state": None, "commit_count": None,
         }
         row["ai_tag"] = ai_tag({**row, "body": n.get("bodyText") or ""})
+        title = n.get("title") or ""
+        row["title"] = title[:300] if is_dep_bot(row["author_login"], row["head_ref"]) or REVERT_TITLE.match(title) else None
         rows.append(row)
     return rows
 

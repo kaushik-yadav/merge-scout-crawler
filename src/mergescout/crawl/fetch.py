@@ -2,9 +2,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from mergescout.crawl.queries import (CLOSED_ISSUES_QUERY, ISSUE_PAGE_QUERY, PR_PAGE_QUERY, REPO_META_QUERY,
-                                      issues_by_number_query, parse_closed_issues, parse_issues, parse_prs,
-                                      parse_repo_meta)
-from mergescout.github.graphql import GraphQLError, NotFound, too_heavy
+                                      is_dep_bot, issues_by_number_query, parse_closed_issues, parse_issues, parse_prs,
+                                      parse_repo_meta, prs_by_number_query)
+from mergescout.github.graphql import GraphQLError, NotFound, RateLimited, too_heavy
 from mergescout.labels import HOT, OPPORTUNITY_LABELS, has_opportunity, norm_label
 
 # Pages of 100 take 5-9 s on big repos and hit GitHub's 10 s limit under load; 50 costs the same points.
@@ -121,4 +121,26 @@ def fetch_repo(gql, repo_id: int, name: str, now: datetime, pr_cap: int = 300, i
         return bundle
     bundle.prs = parse_prs(repo_id, pr_nodes)
     bundle.issues, bundle.comments = parse_issues(repo_id, fresh)
+    add_bot_outcomes(gql, base, bundle)
     return bundle
+
+
+def add_bot_outcomes(gql, base: dict, bundle: RepoBundle) -> None:
+    """Check result and commit count of finished dependency-bot PRs, 50 per query; only these need them (upgrade outcomes)."""
+    rows = {r["number"]: r for r in bundle.prs if r["state"] in ("MERGED", "CLOSED")
+            and is_dep_bot(r["author_login"], r["head_ref"])}
+    numbers = sorted(rows)
+    for i in range(0, len(numbers), BY_NUMBER):
+        chunk = numbers[i:i + BY_NUMBER]
+        try:
+            result = gql.query(prs_by_number_query(chunk), base, partial=True)
+        except (GraphQLError, RateLimited):
+            # Outcomes are an extra: the PRs are kept without them and the next full crawl tries again.
+            return
+        bundle.points += result.cost
+        found = result.data.get("repository") or {}
+        for n in chunk:
+            commits = (found.get(f"pr{n}") or {}).get("commits") or {}
+            last = ((commits.get("nodes") or [{}])[-1] or {}).get("commit") or {}
+            rows[n]["ci_state"] = (last.get("statusCheckRollup") or {}).get("state")
+            rows[n]["commit_count"] = commits.get("totalCount")

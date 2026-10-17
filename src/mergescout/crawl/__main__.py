@@ -4,11 +4,12 @@ import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mergescout.config import load_config
 from mergescout.crawl.chain import next_step, write_last_run
 from mergescout.crawl.runner import run_crawl
-from mergescout.crawl.seed import seed_queue
+from mergescout.crawl.seed import read_watch, seed_queue
 from mergescout.crawl.state import CrawlState
 from mergescout.github.graphql import GitHubGraphQL
 from mergescout.github.identities import identities_from_env
@@ -33,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     seed = sub.add_parser("seed", help="Queue active repos from the sweep, beginner-friendly repos first")
     seed.add_argument("--min-stars", type=int, default=100)
     seed.add_argument("--active-days", type=int, default=90)
+    seed.add_argument("--watch", type=Path, default=None, help="File of owner/name lines to crawl first")
     sub.add_parser("requeue-failed", help="Give failed repos another try (up to 3 attempts)")
     bk = sub.add_parser("backup", help="Copy the state file safely, even while it is in use")
     bk.add_argument("dest")
@@ -64,7 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"requeued {state.requeue_failed(3)}")
         return 0
     if args.cmd == "seed":
-        seed_queue(state, cfg.data_dir, now, min_stars=args.min_stars, active_days=args.active_days)
+        seed_queue(state, cfg.data_dir, now, min_stars=args.min_stars, active_days=args.active_days,
+                   watch=read_watch(args.watch))
         return 0
     try:
         token = cfg.require_token()
