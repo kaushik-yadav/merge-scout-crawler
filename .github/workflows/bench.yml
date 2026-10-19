@@ -52,3 +52,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
           MS_APP_TOKEN: ${{ steps.app.outputs.token }}
           MS_ACTIONS_TOKEN: ${{ github.token }}
+      - name: Read the same share's weekly star history and rebuild the star benchmarks
+        # One request per repo; a problem here never fails the CI benchmarks above.
+        timeout-minutes: 30
+        continue-on-error: true
+        run: python -m mergescout.bench stars --workers 8 --max-wait 900 --limit "${LIMIT:-0}"
+        env:
+          LIMIT: ${{ inputs.limit }}
+          GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
+          MS_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MS_ACTIONS_TOKEN: ${{ github.token }}

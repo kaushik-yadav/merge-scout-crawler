@@ -161,11 +161,13 @@ def _one(pool: TokenPool, repo: dict, since: datetime) -> dict | None:
     return {"repo": repo["name"], "language": repo.get("language"), "stars": repo.get("stars"), **stats} if stats else None
 
 
-def fetch_all(pool: TokenPool, repos: list[dict], now: datetime, days: int = 30, workers: int = 10, log=None) -> dict:
+def fetch_all(pool: TokenPool, repos: list[dict], now: datetime, days: int = 30, workers: int = 10, log=None,
+              read=None) -> dict:
+    """One sample per repo: push CI by default, or another reader (star history) given as read(pool, repo, now)."""
     since = now - timedelta(days=days)
     records, complete, day = [], True, now.strftime("%Y-%m-%d")
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(_one, pool, r, since) for r in repos]
+        futures = [ex.submit(read, pool, r, now) if read else ex.submit(_one, pool, r, since) for r in repos]
         for i, fut in enumerate(futures):
             try:
                 rec = fut.result()
@@ -176,7 +178,7 @@ def fetch_all(pool: TokenPool, repos: list[dict], now: datetime, days: int = 30,
             if rec:
                 records.append({**rec, "day": day})
             if log and (i + 1) % 1000 == 0:
-                log(f"{i + 1}/{len(repos)} repos read, {len(records)} with enough CI runs")
+                log(f"{i + 1}/{len(repos)} repos read, {len(records)} with enough data")
     return {"records": records, "complete": complete, "requests": pool.requests}
 
 

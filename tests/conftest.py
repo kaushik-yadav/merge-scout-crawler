@@ -18,6 +18,16 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+def _no_top_list_download(monkeypatch):
+    # The daily map asks ecosyste.ms for the most-used packages; tests never go to the network (the crawler copy has no map).
+    try:
+        import mergescout.signals.top_packages as tp
+    except ImportError:
+        return
+    monkeypatch.setattr(tp, "http_get_json", lambda url, **k: [])
+
+
 @pytest.fixture
 def make_gz():
     def _make(events, extra_lines=()):

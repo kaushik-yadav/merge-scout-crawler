@@ -10,12 +10,13 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from mergescout.bench.ci import TokenPool, aggregate, fetch_all, todays_share
+from mergescout.bench.stars import aggregate_stars, read_stars
 from mergescout.config import load_config
 from mergescout.github.releases import Releases
 from mergescout.store.sync import STATE_TAG, safe_extract
 
 LATEST_TAG = "bench-latest"
-DAILY = re.compile(r"^ci-(\d{4}-\d{2}-\d{2})\.ndjson\.gz$")
+DAILY = re.compile(r"^(?P<kind>[a-z]+)-(\d{4}-\d{2}-\d{2})\.ndjson\.gz$")
 
 
 def week_tag(day: datetime) -> str:
@@ -41,11 +42,12 @@ def _read(path: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def publish(data_dir: Path, releases, records: list[dict], now: datetime, days: int = 35, log=print) -> dict:
-    """Store today's sample privately, then rebuild the benchmarks from the last five weeks of samples."""
+def publish(data_dir: Path, releases, records: list[dict], now: datetime, days: int = 35, log=print, kind: str = "ci",
+            build=aggregate) -> dict:
+    """Store today's sample privately, then rebuild the benchmarks from the last five weeks of samples of that kind."""
     folder = data_dir / "bench"
     folder.mkdir(parents=True, exist_ok=True)
-    name = f"ci-{now:%Y-%m-%d}.ndjson.gz"
+    name = f"{kind}-{now:%Y-%m-%d}.ndjson.gz"
     today = folder / name
     # A second run on the same day adds to that day's file instead of replacing it.
     release = releases.get(week_tag(now))
@@ -65,14 +67,14 @@ def publish(data_dir: Path, releases, records: list[dict], now: datetime, days: 
         release = releases.get(tag)
         for asset in releases.assets(release) if release else []:
             m = DAILY.match(asset["name"])
-            if not m or asset["name"] == name or m[1] < first:
+            if not m or m["kind"] != kind or asset["name"] == name or m[2] < first:
                 continue
             local = folder / asset["name"]
             if not local.exists():
                 releases.download_asset(asset, local)
             every += _read(local)
-    agg = aggregate(every, now)
-    out = folder / "ci-benchmarks.json"
+    agg = build(every, now)
+    out = folder / f"{kind}-benchmarks.json"
     out.write_text(json.dumps(agg, indent=1, sort_keys=True), encoding="utf-8")
     releases.upload(LATEST_TAG, out)
     log(f"benchmarks: {agg['repos']} repos, {len(agg['groups'])} groups with enough repos")
@@ -83,10 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m mergescout.bench",
                                      description="Sample CI statistics of crawled repos into open benchmarks.")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    ci = sub.add_parser("ci", help="Read today's seventh of the active repos' push runs and rebuild the benchmarks")
-    ci.add_argument("--workers", type=int, default=10)
-    ci.add_argument("--max-wait", type=int, default=3600, help="seconds to wait in total for hourly limits to reset")
-    ci.add_argument("--limit", type=int, default=0, help="read at most this many repos (0: all of today's share)")
+    ci = sub.add_parser("ci", help="Read today's share of the active repos' push runs and rebuild the benchmarks")
+    stars = sub.add_parser("stars", help="Read today's share of the active repos' weekly star history and rebuild its benchmarks")
+    for p in (ci, stars):
+        p.add_argument("--workers", type=int, default=10)
+        p.add_argument("--max-wait", type=int, default=3600, help="seconds to wait in total for hourly limits to reset")
+        p.add_argument("--limit", type=int, default=0, help="read at most this many repos (0: all of today's share)")
     parser.add_argument("--repo", default=os.environ.get("MS_STORE_REPO") or os.environ.get("GITHUB_REPOSITORY"),
                         help="owner/name of the repo whose releases hold the data")
     args = parser.parse_args(argv)
@@ -113,10 +117,12 @@ def main(argv: list[str] | None = None) -> int:
     todo = [r for r in repos if r["name"] in picked]
     log(f"{len(repos)} active repos; today's share: {len(todo)}")
     pool = TokenPool(tokens, max_wait=args.max_wait)
-    got = fetch_all(pool, todo, now, workers=args.workers, log=log)
-    log(f"{len(got['records'])} repos with enough push runs, {got['requests']} requests, "
+    is_stars = args.cmd == "stars"
+    got = fetch_all(pool, todo, now, workers=args.workers, log=log, read=read_stars if is_stars else None)
+    log(f"{len(got['records'])} repos with enough {'star history' if is_stars else 'push runs'}, {got['requests']} requests, "
         f"{'complete' if got['complete'] else 'stopped at the hourly limits'}")
-    publish(data_dir, releases, got["records"], now, log=log)
+    publish(data_dir, releases, got["records"], now, log=log, kind="stars" if is_stars else "ci",
+            build=aggregate_stars if is_stars else aggregate)
     return 0
 
 

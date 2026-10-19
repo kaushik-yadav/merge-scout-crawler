@@ -152,3 +152,12 @@ def test_a_second_run_on_the_same_day_adds_to_that_days_file(tmp_path):
     publish(tmp_path / "a", rel, [rec(i) for i in range(30)], NOW, log=lambda m: None)
     publish(tmp_path / "b", rel, [rec(99)], NOW, log=lambda m: None)
     assert len(gzip.decompress(rel.files[("bench-2026-W42", "ci-2026-10-16.ndjson.gz")]).decode().splitlines()) == 31
+
+
+def test_star_growth_leaves_out_the_running_week_and_young_repos():
+    # Real data: GitHub's weekly star history lists the running, partial week first.
+    from mergescout.bench.stars import star_stats
+    start = int((NOW - timedelta(days=3)).timestamp())
+    rows = [{"week": start, "total": 5}] + [{"week": start - (i + 1) * 604800, "total": 10} for i in range(13)]
+    assert star_stats(rows, stars=1125, now=NOW) == {"gained_12w": 120, "growth_12w": 0.12}
+    assert star_stats(rows[:9], stars=40, now=NOW) is None
