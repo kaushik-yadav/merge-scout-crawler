@@ -53,4 +53,5 @@ def aggregate_stars(records: list[dict], now: datetime, top_languages: int = 25)
                  "growth_12w": _summary([r["growth_12w"] for r in items])}
            for key, items in groups.items() if len(items) >= MIN_GROUP}
     return {"version": 1, "built_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "repos": len(recs), "definition": DEFINITION,
-            "groups": out}
+            "population": "public GitHub repos with 100+ stars that pushed in the last 30 days (the CI sampler's daily slice)",
+            "gaps": "stars only: no forks, downloads or traffic; no private repos", "groups": out}

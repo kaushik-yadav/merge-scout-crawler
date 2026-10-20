@@ -10,6 +10,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from mergescout.bench.ci import TokenPool, aggregate, fetch_all, todays_share
+from mergescout.bench.deploys import aggregate_deploys, repo_deploys
 from mergescout.bench.stars import aggregate_stars, read_stars
 from mergescout.config import load_config
 from mergescout.github.releases import Releases
@@ -87,7 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     ci = sub.add_parser("ci", help="Read today's share of the active repos' push runs and rebuild the benchmarks")
     stars = sub.add_parser("stars", help="Read today's share of the active repos' weekly star history and rebuild its benchmarks")
-    for p in (ci, stars):
+    deploys = sub.add_parser("deploys", help="Read today's share of the active repos' deployments and releases (2 requests "
+                                             "each) and rebuild the shipping-frequency benchmarks")
+    for p in (ci, stars, deploys):
         p.add_argument("--workers", type=int, default=10)
         p.add_argument("--max-wait", type=int, default=3600, help="seconds to wait in total for hourly limits to reset")
         p.add_argument("--limit", type=int, default=0, help="read at most this many repos (0: all of today's share)")
@@ -117,12 +120,14 @@ def main(argv: list[str] | None = None) -> int:
     todo = [r for r in repos if r["name"] in picked]
     log(f"{len(repos)} active repos; today's share: {len(todo)}")
     pool = TokenPool(tokens, max_wait=args.max_wait)
-    is_stars = args.cmd == "stars"
-    got = fetch_all(pool, todo, now, workers=args.workers, log=log, read=read_stars if is_stars else None)
-    log(f"{len(got['records'])} repos with enough {'star history' if is_stars else 'push runs'}, {got['requests']} requests, "
-        f"{'complete' if got['complete'] else 'stopped at the hourly limits'}")
-    publish(data_dir, releases, got["records"], now, log=log, kind="stars" if is_stars else "ci",
-            build=aggregate_stars if is_stars else aggregate)
+    readers = {"ci": (None, aggregate, "push runs"), "stars": (read_stars, aggregate_stars, "star history"),
+               "deploys": (repo_deploys, aggregate_deploys, "deployment and release history")}
+    read, build, what = readers[args.cmd]
+    got = fetch_all(pool, todo, now, workers=args.workers, log=log, read=read)
+    # The requests are counted so each sampler is seen to stay inside the day's REST budget.
+    log(f"{len(got['records'])} repos with {what}, {got['requests']} requests "
+        f"({got['requests'] / max(len(todo), 1):.2f} a repo), {'complete' if got['complete'] else 'stopped at the hourly limits'}")
+    publish(data_dir, releases, got["records"], now, log=log, kind=args.cmd, build=build)
     return 0
 
 

@@ -187,8 +187,25 @@ def tier(stars: int | None) -> str:
     return "10k+" if stars >= 10_000 else "1k-10k" if stars >= 1000 else "100-1k"
 
 
+BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED = 400, 20261021
+
+
+def bootstrap_median(values: list[float], resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED) -> tuple:
+    """A 95% range for a group's median by resampling its repos; the same seed on every build, so the file recomputes."""
+    import random
+    rnd, n = random.Random(seed), len(values)
+    meds = sorted(_pct([values[rnd.randrange(n)] for _ in range(n)], 0.5) for _ in range(resamples))
+    return meds[int(0.025 * resamples)], meds[min(resamples - 1, int(0.975 * resamples))]
+
+
+def quantiles(values: list[float]) -> dict:
+    """P10-P90 of a group (nearest rank) and the 95% range of its median."""
+    low, high = bootstrap_median(values)
+    return {**{f"p{int(q * 100)}": _pct(values, q) for q in (0.1, 0.25, 0.5, 0.75, 0.9)}, "p50_low": low, "p50_high": high}
+
+
 def _summary(values: list[float]) -> dict:
-    return {f"p{int(q * 100)}": _pct(values, q) for q in (0.1, 0.25, 0.5, 0.75, 0.9)}
+    return quantiles(values)
 
 
 def aggregate(records: list[dict], now: datetime, top_languages: int = 25) -> dict:
@@ -217,4 +234,7 @@ def aggregate(records: list[dict], now: datetime, top_languages: int = 25) -> di
                     "rerun_share": _summary([r["rerun_share"] for r in items])}
     return {"version": 1, "built_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "repos": len(recs),
             "definition": "per push of the last 30 days (newest 50 push runs): time from push until all its checks finished, and how they ended; GitHub-managed workflows excluded",
+            "population": "public GitHub repos with 100+ stars that pushed in the last 30 days, a 28th of them read each day "
+                          "(each about once in 4 weeks)",
+            "gaps": "GitHub Actions push runs only: no pull request runs, no other CI systems, no private or enterprise repos",
             "groups": out}

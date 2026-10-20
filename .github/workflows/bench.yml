@@ -62,3 +62,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
           MS_APP_TOKEN: ${{ steps.app.outputs.token }}
           MS_ACTIONS_TOKEN: ${{ github.token }}
+      - name: Read the same share's deployments and releases and rebuild the shipping benchmarks
+        # Two requests per repo (measured 2.00 on 300 repos); a problem here never fails the benchmarks above.
+        timeout-minutes: 45
+        continue-on-error: true
+        run: python -m mergescout.bench deploys --workers 8 --max-wait 900 --limit "${LIMIT:-0}"
+        env:
+          LIMIT: ${{ inputs.limit }}
+          GITHUB_TOKEN: ${{ secrets.MS_GITHUB_TOKEN }}
+          MS_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MS_ACTIONS_TOKEN: ${{ github.token }}

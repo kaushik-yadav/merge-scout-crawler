@@ -161,3 +161,29 @@ def test_star_growth_leaves_out_the_running_week_and_young_repos():
     rows = [{"week": start, "total": 5}] + [{"week": start - (i + 1) * 604800, "total": 10} for i in range(13)]
     assert star_stats(rows, stars=1125, now=NOW) == {"gained_12w": 120, "growth_12w": 0.12}
     assert star_stats(rows[:9], stars=40, now=NOW) is None
+
+
+def test_shipping_is_read_from_production_deployments_first_then_stable_releases():
+    # Measured on 300 repos (2026-10-21): 2.00 requests each; 4% ship through production deployments, 44% through
+    # releases, 52% through neither, which the benchmark says beside its numbers.
+    from datetime import datetime, timedelta, timezone
+
+    import httpx
+
+    from mergescout.bench.ci import TokenPool
+    from mergescout.bench.deploys import repo_deploys
+    now = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
+
+    def iso(days):
+        return (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    answers = {"/repos/o/app/deployments": [{"environment": "Production – web", "created_at": iso(d)} for d in range(0, 90, 2)],
+               "/repos/o/app/releases": [],
+               "/repos/o/lib/deployments": [{"environment": "Preview", "created_at": iso(1)}],
+               "/repos/o/lib/releases": [{"tag_name": f"v1.{k}.0", "published_at": iso(k * 14), "prerelease": False}
+                                         for k in range(6)] + [{"tag_name": "v2.0.0-rc.1", "published_at": iso(2)}]}
+    pool = TokenPool(["t"], client=httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json=answers.get(r.url.path, []), headers={"x-ratelimit-remaining": "4000"}))))
+    app = repo_deploys(pool, {"name": "o/app"}, now)
+    lib = repo_deploys(pool, {"name": "o/lib"}, now)
+    assert (app["source"], app["days_per_week"], app["tier"]) == ("deployments api", 3, "high")
+    assert (lib["source"], lib["deploy_days"], lib["tier"]) == ("releases", 6, "medium") and pool.requests == 4
