@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -13,8 +14,9 @@ class ReleaseError(RuntimeError):
 
 class Releases:
     # Release assets in our own repo are the durable store for crawl data and state backups.
-    def __init__(self, token: str | None, repo: str, client: httpx.Client | None = None):
-        self.repo = repo
+    def __init__(self, token: str | None, repo: str, client: httpx.Client | None = None, sleep=time.sleep, clock=time.time,
+                 max_wait: float = 600):  # the crawl job has 70 min: 52 crawling, a few to push
+        self.repo, self.sleep, self.clock, self.max_wait = repo, sleep, clock, max_wait
         self.client = client or httpx.Client(timeout=httpx.Timeout(300.0, connect=15.0), follow_redirects=True)
         self.headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                         "User-Agent": "mergescout"}
@@ -27,6 +29,13 @@ class Releases:
         if resp.status_code >= 400:
             raise ReleaseError(f"{what} failed: HTTP {resp.status_code} {resp.text[:200]}")
         return resp
+
+    def _limited_wait(self, resp: httpx.Response) -> float | None:
+        # Seconds until the account's hourly limit resets, when that is why the request failed and the wait is short.
+        if resp.status_code not in (403, 429) or resp.headers.get("x-ratelimit-remaining") != "0":
+            return None
+        wait = float(resp.headers.get("x-ratelimit-reset") or 0) - self.clock() + 5
+        return wait if 0 < wait <= self.max_wait else None
 
     def get(self, tag: str) -> dict | None:
         resp = self.client.get(f"{API}/repos/{self.repo}/releases/tags/{tag}", headers=self.headers)
@@ -64,9 +73,15 @@ class Releases:
             self.delete_asset(existing[target])
         headers = {**self.headers, "Content-Type": "application/octet-stream",
                    "Content-Length": str(path.stat().st_size)}
-        with path.open("rb") as f:
-            resp = self.client.post(f"{UPLOADS}/repos/{self.repo}/releases/{release['id']}/assets",
-                                    params={"name": target}, headers=headers, content=f)
+        for attempt in range(2):
+            with path.open("rb") as f:
+                resp = self.client.post(f"{UPLOADS}/repos/{self.repo}/releases/{release['id']}/assets",
+                                        params={"name": target}, headers=headers, content=f)
+            # The hour's work is in this file: wait for the reset once rather than lose it (real failure 2026-10-20).
+            wait = self._limited_wait(resp) if attempt == 0 else None
+            if wait is None:
+                break
+            self.sleep(wait)
         uploaded = self._check(resp, f"uploading {name}").json()
         if target == name:
             return uploaded

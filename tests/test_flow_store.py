@@ -212,3 +212,24 @@ def test_bronze_download_works_with_the_real_release_client(tmp_path):
     assert (tmp_path / "bronze" / "crawl" / "prs" / "run=1-000.parquet").read_bytes() == b"bytes"
     assert fetch_bronze(rel, tmp_path, log=lambda *a: None) == 0
     assert not any("/releases/2/" in str(r.url) or "/releases/3/" in str(r.url) for r in seen)
+
+
+def test_an_upload_waits_once_for_the_hourly_reset_instead_of_losing_the_hours_work(tmp_path):
+    # Real failure (2026-10-20 17:27): 'API rate limit exceeded' on uploading crawl.sqlite.gz lost that hour's crawl.
+    import httpx
+
+    from mergescout.github.releases import Releases
+    now, slept, posts = 1_800_000_000.0, [], []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": 1} if request.url.path.endswith("/tags/state") else [])
+        posts.append(1)
+        if len(posts) == 1:
+            return httpx.Response(403, json={"message": "API rate limit exceeded"},
+                                  headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(now + 60))})
+        return httpx.Response(201, json={"id": 2})
+    f = tmp_path / "crawl.sqlite.gz"
+    f.write_bytes(b"x")
+    rel = Releases("t", "o/s", client=httpx.Client(transport=httpx.MockTransport(handler)), sleep=slept.append, clock=lambda: now)
+    assert rel.upload("state", f)["id"] == 2 and slept == [65] and len(posts) == 2
