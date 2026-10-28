@@ -70,11 +70,11 @@ jobs:
             echo "No crawl state in the cache or the releases; stopping so the good backup is never replaced."
             exit 1
           fi
-      - name: Start a fresh sweep on the 1st of the month, or when asked
+      - name: Start a fresh sweep every Monday (new repos and fresh activity), or when asked
         if: steps.guard.outputs.skip != 'true'
         run: |
-          day=$(date -u +%d)
-          if [ "${{ inputs.full_sweep }}" = "true" ] || [ "$day" = "01" ] || [ ! -d data/discover ]; then
+          weekday=$(date -u +%u)
+          if [ "${{ inputs.full_sweep }}" = "true" ] || [ "$weekday" = "1" ] || [ ! -d data/discover ]; then
             rm -rf data/discover
             echo "fresh sweep"
           fi
